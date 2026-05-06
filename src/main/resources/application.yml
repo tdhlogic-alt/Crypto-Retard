@@ -1,0 +1,28 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: crypto-bot-starter
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+bot:
+  enabled: false          # master switch. Keep false until you're ready.
+  dry-run: true           # true = logs intended orders, does not place them.
+  fixed-rate-ms: 900000   # 15 minutes
+  product-id: BTC-USD
+  buy-quote-size-usd: "25.00"
+  min-usd-cash-reserve: "500.00"
+  max-single-buy-usd: "50.00"
+  max-daily-buy-usd: "100.00"
+  dip-threshold-percent: "5.0" # buy only when 24h drop >= this threshold
+
+coinbase:
+  base-url: https://api.coinbase.com
+  api-key-name: ${COINBASE_API_KEY_NAME:}
+  private-key-pem: ${COINBASE_PRIVATE_KEY_PEM:}
