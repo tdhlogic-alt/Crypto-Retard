@@ -12,5 +12,12 @@ FROM eclipse-temurin:26-jre-jammy
 WORKDIR /app
 ARG JAR_FILE=build/libs/*.jar
 COPY --from=build /workspace/${JAR_FILE} app.jar
+
+# Health check to detect if app is responsive
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/actuator/health || exit 1
+
 EXPOSE 8080
-ENTRYPOINT ["java","-jar","/app/app.jar"]
+
+# Use exec form to ensure signals are properly received for graceful shutdown
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
