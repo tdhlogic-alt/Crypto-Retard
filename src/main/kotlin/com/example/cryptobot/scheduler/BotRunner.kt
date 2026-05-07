@@ -5,11 +5,14 @@ import com.example.cryptobot.config.BotProperties
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.SimpleDipBuyStrategy
 import com.example.cryptobot.strategy.TradingDecision
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import reactor.core.publisher.Mono
+import reactor.util.retry.Retry
 import java.math.BigDecimal
+import java.time.Duration
 
 @Component
 class BotRunner(
@@ -22,20 +25,33 @@ class BotRunner(
     @Scheduled(fixedRateString = "\${bot.fixed-rate-ms}")
     fun tick() {
         if (!props.enabled) {
-            log.info("Bot disabled. Set bot.enabled=true to run strategy.")
+            log.debug("Bot disabled.")
             return
         }
 
         buildSnapshot()
             .map(strategy::decide)
             .flatMap(::execute)
-            .doOnError { log.error("Bot tick failed", it) }
+            .retryWhen(
+                Retry.backoff(3, Duration.ofSeconds(2))
+                    .filter { it !is IllegalArgumentException }
+                    .doBeforeRetry { signal ->
+                        log.warn("Retry attempt ${signal.totalRetries() + 1}")
+                    }
+            )
+            .doOnError { log.error("Bot tick failed after retries", it) }
             .onErrorResume { Mono.empty() }
-            .block()
+            .subscribe()
     }
 
+    @CircuitBreaker(name = "coinbaseApi", fallbackMethod = "buildSnapshotFallback")
     private fun buildSnapshot(): Mono<MarketSnapshot> {
-        return Mono.zip(coinbaseClient.getProduct(props.productId), coinbaseClient.listAccounts())
+        return Mono.zip(
+            coinbaseClient.getProduct(props.productId)
+                .timeout(Duration.ofSeconds(10)),
+            coinbaseClient.listAccounts()
+                .timeout(Duration.ofSeconds(10))
+        )
             .map { tuple ->
                 val product = tuple.t1
                 val accounts = tuple.t2.accounts
@@ -52,6 +68,11 @@ class BotRunner(
             }
     }
 
+    private fun buildSnapshotFallback(ex: Exception): Mono<MarketSnapshot> {
+        log.error("Circuit breaker fallback triggered: ${ex.message}")
+        return Mono.error(ex)
+    }
+
     private fun execute(decision: TradingDecision): Mono<Unit> = when (decision) {
         is TradingDecision.Skip -> {
             log.info("SKIP: {}", decision.reason)
@@ -64,6 +85,7 @@ class BotRunner(
             } else {
                 log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
                 coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd)
+                    .timeout(Duration.ofSeconds(15))
                     .doOnNext { log.warn("Coinbase order response success={} error={}", it.success, it.errorResponse) }
                     .thenReturn(Unit)
             }

@@ -12,6 +12,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.COINBASE_API_KEY_NAME }}" ]; then echo "Missing secret: COINBASE_API_KEY_NAME"; exit 1; fi
+          if [ -z "${{ secrets.COINBASE_PRIVATE_KEY_PEM }}" ]; then echo "Missing secret: COINBASE_PRIVATE_KEY_PEM"; exit 1; fi
+          echo "Required secrets present"
+
       - name: Set up Java 26
         uses: actions/setup-java@v4
         with:
