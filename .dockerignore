@@ -1,0 +1,22 @@
+# Ignore Gradle and build artifacts
+.gradle/
+build/
+**/build/
+**/target/
+*.jar
+.gradle
+
+# IDE files
+.idea/
+*.iml
+
+# Git
+.git
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dockerfile and docker-compose local overrides
+Dockerfile
+docker-compose*.yml
