@@ -24,3 +24,8 @@ dependencies {
 }
 
 tasks.withType<Test> { useJUnitPlatform() }
+
+// Ensure Kotlin compiler targets the same JVM as the Java toolchain
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    kotlinOptions.jvmTarget = "25"
+}
