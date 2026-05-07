@@ -26,8 +26,12 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
-      - name: Build bootJar
-        run: ./gradlew bootJar -x test --no-daemon --console=plain
+      - name: Prepare and Build bootJar
+        run: |
+          ls -la
+          file gradlew || true
+          chmod +x gradlew || true
+          ./gradlew bootJar -x test --no-daemon --console=plain
 
       - name: Decode GCP service account key
         run: echo "${{ secrets.GCP_SA_KEY_B64 }}" | base64 --decode > gha-deployer-key.json
