@@ -25,7 +25,12 @@ dependencies {
 
 tasks.withType<Test> { useJUnitPlatform() }
 
-// Ensure Kotlin compiler targets the same JVM as the Java toolchain
+// Ensure Kotlin compiler targets a supported JVM and align Java bytecode
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions.jvmTarget = "25"
+    kotlinOptions.jvmTarget = "21"
+}
+
+tasks.withType<org.gradle.api.tasks.compile.JavaCompile> {
+    // Produce bytecode compatible with Java 21 so Kotlin and Java align
+    options.release.set(21)
 }
