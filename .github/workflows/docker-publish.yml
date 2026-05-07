@@ -29,16 +29,15 @@ jobs:
       - name: Build bootJar
         run: ./gradlew bootJar -x test --no-daemon --console=plain
 
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v1
-        with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+      - name: Decode GCP service account key
+        run: echo "${{ secrets.GCP_SA_KEY_B64 }}" | base64 --decode > gha-deployer-key.json
 
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v1
-        with:
-          project_id: ${{ secrets.GCP_PROJECT }}
-          export_default_credentials: true
+      - name: Authenticate to GCP
+        run: |
+          gcloud auth activate-service-account --key-file=gha-deployer-key.json
+          gcloud config set project ${{ secrets.GCP_PROJECT }}
+        env:
+          CLOUDSDK_CORE_PROJECT: ${{ secrets.GCP_PROJECT }}
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
