@@ -8,7 +8,7 @@ plugins {
 group = "com.example"
 version = "0.0.1-SNAPSHOT"
 
-java { toolchain { languageVersion.set(JavaLanguageVersion.of(26)) } }
+java { toolchain { languageVersion.set(JavaLanguageVersion.of(21)) } }
 
 
 

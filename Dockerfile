@@ -8,7 +8,7 @@ RUN chmod +x ./gradlew || true
 RUN ./gradlew bootJar -x test --no-daemon --console=plain
 
 # Run stage
-FROM eclipse-temurin:26-jre-jammy
+FROM eclipse-temurin:21
 WORKDIR /app
 ARG JAR_FILE=build/libs/*.jar
 COPY --from=build /workspace/${JAR_FILE} app.jar
