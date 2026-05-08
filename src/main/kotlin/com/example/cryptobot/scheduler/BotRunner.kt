@@ -48,9 +48,9 @@ class BotRunner(
     private fun buildSnapshot(): Mono<MarketSnapshot> {
         return Mono.zip(
             coinbaseClient.getProduct(props.productId)
-                .timeout(Duration.ofSeconds(10)),
+                .timeout(Duration.ofSeconds(30)),
             coinbaseClient.listAccounts()
-                .timeout(Duration.ofSeconds(10))
+                .timeout(Duration.ofSeconds(30))
         )
             .map { tuple ->
                 val product = tuple.t1
@@ -85,7 +85,7 @@ class BotRunner(
             } else {
                 log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
                 coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd)
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(30))
                     .doOnNext { log.warn("Coinbase order response success={} error={}", it.success, it.errorResponse) }
                     .thenReturn(Unit)
             }
