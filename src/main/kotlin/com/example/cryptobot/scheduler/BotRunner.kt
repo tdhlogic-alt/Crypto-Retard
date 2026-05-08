@@ -39,6 +39,8 @@ class BotRunner(
                     .filter { ex ->
                         ex is java.util.concurrent.TimeoutException ||
                                 ex is java.net.ConnectException ||
+                                ex is java.nio.channels.ClosedChannelException ||
+                                ex is javax.net.ssl.SSLException ||
                                 ex is org.springframework.web.reactive.function.client.WebClientRequestException ||
                                 ex is IllegalStateException && ex.message?.contains("response body has been released") == true
                     }
