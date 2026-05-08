@@ -39,7 +39,8 @@ class BotRunner(
                     .filter { ex ->
                         ex is java.util.concurrent.TimeoutException ||
                                 ex is java.net.ConnectException ||
-                                ex is org.springframework.web.reactive.function.client.WebClientRequestException
+                                ex is org.springframework.web.reactive.function.client.WebClientRequestException ||
+                                ex is IllegalStateException && ex.message?.contains("response body has been released") == true
                     }
                     .doBeforeRetry { signal ->
                         log.warn(
@@ -55,10 +56,8 @@ class BotRunner(
         log.info("Building market snapshot for {}", props.productId)
 
         return Mono.zip(
-            coinbaseClient.getProduct(props.productId)
-                .timeout(Duration.ofSeconds(35)),
+            coinbaseClient.getProduct(props.productId),
             coinbaseClient.listAccounts()
-                .timeout(Duration.ofSeconds(35))
         )
             .map { tuple ->
                 val product = tuple.t1
