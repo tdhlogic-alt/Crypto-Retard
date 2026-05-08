@@ -2,16 +2,11 @@ package com.example.cryptobot.scheduler
 
 import com.example.cryptobot.coinbase.CoinbaseClient
 import com.example.cryptobot.config.BotProperties
-import com.example.cryptobot.persistence.TradeDecisionLog
-import com.example.cryptobot.persistence.TradeDecisionLogRepository
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.SimpleDipBuyStrategy
 import com.example.cryptobot.strategy.TradingDecision
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker
 import org.slf4j.LoggerFactory
-import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.boot.CommandLineRunner
 import org.springframework.stereotype.Component
 import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
@@ -23,22 +18,19 @@ class BotRunner(
     private val props: BotProperties,
     private val coinbaseClient: CoinbaseClient,
     private val strategy: SimpleDipBuyStrategy,
-    private val tradeDecisionLogRepository: TradeDecisionLogRepository,
-) {
+) : CommandLineRunner {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    @Scheduled(fixedRateString = "\${bot.fixed-rate-ms}")
-    fun tick() {
+    override fun run(vararg args: String) {
         if (!props.enabled) {
-            log.debug("Bot disabled.")
+            log.info("Bot disabled.")
             return
         }
 
         buildSnapshot()
             .flatMap { snapshot ->
-                strategy.decide(snapshot).let { decision ->
-                    execute(snapshot, decision)
-                }
+                val decision = strategy.decide(snapshot)
+                execute(snapshot, decision)
             }
             .retryWhen(
                 Retry.backoff(2, Duration.ofSeconds(3))
@@ -60,16 +52,10 @@ class BotRunner(
                         )
                     }
             )
-            .doOnSubscribe {
-                log.info("Bot tick started")
-            }
-            .doOnSuccess {
-                log.info("Bot tick completed")
-            }
-            .doOnError { ex ->
-                log.error("Bot tick failed", ex)
-            }
-            .subscribe()
+            .doOnSubscribe { log.info("Bot tick started") }
+            .doOnSuccess { log.info("Bot tick completed") }
+            .doOnError { ex -> log.error("Bot tick failed", ex) }
+            .block()
     }
 
     private fun buildSnapshot(): Mono<MarketSnapshot> {
@@ -107,89 +93,22 @@ class BotRunner(
     private fun execute(snapshot: MarketSnapshot, decision: TradingDecision): Mono<Unit> = when (decision) {
         is TradingDecision.Skip -> {
             log.info("SKIP: {}", decision.reason)
-
-            tradeDecisionLogRepository.save(
-                TradeDecisionLog(
-                    productId = snapshot.productId,
-                    decisionType = "SKIP",
-                    reason = decision.reason,
-                    price = snapshot.price,
-                    change24hPercent = snapshot.change24hPercent,
-                    usdAvailable = snapshot.usdAvailable,
-                    quoteSizeUsd = null,
-                    dryRun = props.dryRun,
-                )
-            ).thenReturn(Unit)
+            Mono.just(Unit)
         }
 
         is TradingDecision.Buy -> {
-            val since = OffsetDateTime.now(ZoneOffset.UTC).toLocalDate()
-                .atStartOfDay()
-                .atOffset(ZoneOffset.UTC)
-
-            tradeDecisionLogRepository.liveBuyTotalSince(since)
-                .flatMap { spentToday ->
-                    val projected = spentToday + decision.quoteSizeUsd
-
-                    if (!props.dryRun && projected > props.maxDailyBuyUsd) {
-                        val reason = "Daily live buy limit reached. spentToday=$spentToday projected=$projected max=${props.maxDailyBuyUsd}"
-                        log.warn("SKIP: {}", reason)
-
-                        tradeDecisionLogRepository.save(
-                            TradeDecisionLog(
-                                productId = snapshot.productId,
-                                decisionType = "SKIP",
-                                reason = reason,
-                                price = snapshot.price,
-                                change24hPercent = snapshot.change24hPercent,
-                                usdAvailable = snapshot.usdAvailable,
-                                quoteSizeUsd = decision.quoteSizeUsd,
-                                dryRun = props.dryRun,
-                            )
-                        ).thenReturn(Unit)
-                    } else if (props.dryRun) {
-                        log.warn(
-                            "DRY RUN: would BUY {} of {}. Reason: {}",
-                            decision.quoteSizeUsd,
-                            decision.productId,
-                            decision.reason
-                        )
-
-                        tradeDecisionLogRepository.save(
-                            TradeDecisionLog(
-                                productId = snapshot.productId,
-                                decisionType = "BUY",
-                                reason = decision.reason,
-                                price = snapshot.price,
-                                change24hPercent = snapshot.change24hPercent,
-                                usdAvailable = snapshot.usdAvailable,
-                                quoteSizeUsd = decision.quoteSizeUsd,
-                                dryRun = true,
-                            )
-                        ).thenReturn(Unit)
-                    } else {
-                        log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
-
-                        coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd)
-                            .flatMap { response ->
-                                tradeDecisionLogRepository.save(
-                                    TradeDecisionLog(
-                                        productId = snapshot.productId,
-                                        decisionType = "BUY",
-                                        reason = decision.reason,
-                                        price = snapshot.price,
-                                        change24hPercent = snapshot.change24hPercent,
-                                        usdAvailable = snapshot.usdAvailable,
-                                        quoteSizeUsd = decision.quoteSizeUsd,
-                                        dryRun = false,
-                                        coinbaseSuccess = response.success,
-                                        errorMessage = response.errorResponse?.toString(),
-                                    )
-                                )
-                            }
-                            .thenReturn(Unit)
-                    }
-                }
+            if (props.dryRun) {
+                log.warn(
+                    "DRY RUN: would BUY {} of {}. Reason: {}",
+                    decision.quoteSizeUsd,
+                    decision.productId,
+                    decision.reason
+                )
+                Mono.just(Unit)
+            } else {
+                log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
+                coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd).thenReturn(Unit)
+            }
         }
     }
 }
