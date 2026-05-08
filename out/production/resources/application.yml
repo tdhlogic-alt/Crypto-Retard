@@ -7,6 +7,16 @@ spring:
     name: crypto-bot-starter
   lifecycle:
     timeout-per-shutdown-phase: 30s
+  r2dbc:
+    url: ${DATABASE_URL:}
+    username: ${DATABASE_USERNAME:}
+    password: ${DATABASE_PASSWORD:}
+
+  flyway:
+    enabled: true
+    url: ${FLYWAY_DATABASE_URL:}
+    user: ${DATABASE_USERNAME:}
+    password: ${DATABASE_PASSWORD:}
 
 management:
   endpoints:
