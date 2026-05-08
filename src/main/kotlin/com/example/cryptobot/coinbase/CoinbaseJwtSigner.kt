@@ -35,7 +35,7 @@ class CoinbaseJwtSigner(private val props: CoinbaseProperties) {
             .subject(props.apiKeyName)
             .notBeforeTime(Date.from(now))
             .expirationTime(Date.from(now.plusSeconds(120)))
-            .claim("uri", uri)
+            .claim("uris", listOf(uri))
             .build()
 
         val header = JWSHeader.Builder(JWSAlgorithm.ES256)
