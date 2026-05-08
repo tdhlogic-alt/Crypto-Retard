@@ -20,9 +20,10 @@ class CoinbaseClient(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    private val httpClient = HttpClient.create()
+    private val httpClient = HttpClient.newConnection()
         .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000)
         .responseTimeout(Duration.ofSeconds(30))
+        .secure()
 
     private val webClient = WebClient.builder()
         .baseUrl(props.baseUrl)
@@ -46,6 +47,9 @@ class CoinbaseClient(
             .bodyToMono(ProductResponse::class.java)
             .doOnSubscribe { log.info("Fetching Coinbase product {}", productId) }
             .doOnSuccess { log.info("Fetched Coinbase product {}", productId) }
+            .doOnError { ex ->
+                log.error("Coinbase request failed: {}", ex.message, ex)
+            }
     }
 
     fun listAccounts(): Mono<AccountsResponse> {
@@ -65,6 +69,9 @@ class CoinbaseClient(
             .bodyToMono(AccountsResponse::class.java)
             .doOnSubscribe { log.info("Fetching Coinbase accounts") }
             .doOnSuccess { log.info("Fetched Coinbase accounts") }
+            .doOnError { ex ->
+                log.error("Coinbase request failed: {}", ex.message, ex)
+            }
     }
 
     fun createMarketBuy(productId: String, quoteSizeUsd: BigDecimal): Mono<CreateOrderResponse> {
@@ -86,5 +93,8 @@ class CoinbaseClient(
             }
             .bodyToMono(CreateOrderResponse::class.java)
             .doOnSubscribe { log.warn("Submitting Coinbase market buy: product={} quoteSizeUsd={}", productId, quoteSizeUsd) }
+            .doOnError { ex ->
+                log.error("Coinbase request failed: {}", ex.message, ex)
+            }
     }
 }

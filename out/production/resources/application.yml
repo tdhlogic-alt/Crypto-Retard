@@ -17,7 +17,7 @@ management:
 bot:
   enabled: false          # master switch. Keep false until you're ready.
   dry-run: true           # true = logs intended orders, does not place them.
-  fixed-rate-ms: 900000   # 15 minutes
+  fixed-rate-ms: 300000
   product-id: BTC-USD
   buy-quote-size-usd: "25.00"
   min-usd-cash-reserve: "500.00"
