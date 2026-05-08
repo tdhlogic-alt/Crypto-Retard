@@ -33,24 +33,32 @@ class BotRunner(
             .map(strategy::decide)
             .flatMap(::execute)
             .retryWhen(
-                Retry.backoff(3, Duration.ofSeconds(2))
-                    .filter { it !is IllegalArgumentException }
+                Retry.backoff(2, Duration.ofSeconds(3))
+                    .maxBackoff(Duration.ofSeconds(15))
+                    .jitter(0.25)
+                    .filter { ex ->
+                        ex is java.util.concurrent.TimeoutException ||
+                                ex is java.net.ConnectException ||
+                                ex is org.springframework.web.reactive.function.client.WebClientRequestException
+                    }
                     .doBeforeRetry { signal ->
-                        log.warn("Retry attempt ${signal.totalRetries() + 1}")
+                        log.warn(
+                            "Retrying bot tick. attempt={} error={}",
+                            signal.totalRetries() + 1,
+                            signal.failure().message
+                        )
                     }
             )
-            .doOnError { log.error("Bot tick failed after retries", it) }
-            .onErrorResume { Mono.empty() }
-            .subscribe()
     }
 
-    @CircuitBreaker(name = "coinbaseApi", fallbackMethod = "buildSnapshotFallback")
     private fun buildSnapshot(): Mono<MarketSnapshot> {
+        log.info("Building market snapshot for {}", props.productId)
+
         return Mono.zip(
             coinbaseClient.getProduct(props.productId)
-                .timeout(Duration.ofSeconds(30)),
+                .timeout(Duration.ofSeconds(35)),
             coinbaseClient.listAccounts()
-                .timeout(Duration.ofSeconds(30))
+                .timeout(Duration.ofSeconds(35))
         )
             .map { tuple ->
                 val product = tuple.t1
@@ -66,11 +74,15 @@ class BotRunner(
                     usdAvailable = usdAvailable,
                 )
             }
-    }
-
-    private fun buildSnapshotFallback(ex: Exception): Mono<MarketSnapshot> {
-        log.error("Circuit breaker fallback triggered: ${ex.message}")
-        return Mono.error(ex)
+            .doOnSuccess {
+                log.info(
+                    "Market snapshot built: product={} price={} change24h={} usdAvailable={}",
+                    it.productId,
+                    it.price,
+                    it.change24hPercent,
+                    it.usdAvailable
+                )
+            }
     }
 
     private fun execute(decision: TradingDecision): Mono<Unit> = when (decision) {
