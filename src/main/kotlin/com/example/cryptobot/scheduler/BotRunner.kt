@@ -2,6 +2,10 @@ package com.example.cryptobot.scheduler
 
 import com.example.cryptobot.coinbase.CoinbaseClient
 import com.example.cryptobot.config.BotProperties
+import com.example.cryptobot.persistence.TradeDecisionLog
+import com.example.cryptobot.persistence.TradeDecisionLogRepository
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.SimpleDipBuyStrategy
 import com.example.cryptobot.strategy.TradingDecision
@@ -19,6 +23,7 @@ class BotRunner(
     private val props: BotProperties,
     private val coinbaseClient: CoinbaseClient,
     private val strategy: SimpleDipBuyStrategy,
+    private val tradeDecisionLogRepository: TradeDecisionLogRepository,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -30,8 +35,11 @@ class BotRunner(
         }
 
         buildSnapshot()
-            .map(strategy::decide)
-            .flatMap(::execute)
+            .flatMap { snapshot ->
+                strategy.decide(snapshot).let { decision ->
+                    execute(snapshot, decision)
+                }
+            }
             .retryWhen(
                 Retry.backoff(2, Duration.ofSeconds(3))
                     .maxBackoff(Duration.ofSeconds(15))
@@ -96,22 +104,92 @@ class BotRunner(
             }
     }
 
-    private fun execute(decision: TradingDecision): Mono<Unit> = when (decision) {
+    private fun execute(snapshot: MarketSnapshot, decision: TradingDecision): Mono<Unit> = when (decision) {
         is TradingDecision.Skip -> {
             log.info("SKIP: {}", decision.reason)
-            Mono.just(Unit)
+
+            tradeDecisionLogRepository.save(
+                TradeDecisionLog(
+                    productId = snapshot.productId,
+                    decisionType = "SKIP",
+                    reason = decision.reason,
+                    price = snapshot.price,
+                    change24hPercent = snapshot.change24hPercent,
+                    usdAvailable = snapshot.usdAvailable,
+                    quoteSizeUsd = null,
+                    dryRun = props.dryRun,
+                )
+            ).thenReturn(Unit)
         }
+
         is TradingDecision.Buy -> {
-            if (props.dryRun) {
-                log.warn("DRY RUN: would BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
-                Mono.just(Unit)
-            } else {
-                log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
-                coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd)
-                    .timeout(Duration.ofSeconds(30))
-                    .doOnNext { log.warn("Coinbase order response success={} error={}", it.success, it.errorResponse) }
-                    .thenReturn(Unit)
-            }
+            val since = OffsetDateTime.now(ZoneOffset.UTC).toLocalDate()
+                .atStartOfDay()
+                .atOffset(ZoneOffset.UTC)
+
+            tradeDecisionLogRepository.liveBuyTotalSince(since)
+                .flatMap { spentToday ->
+                    val projected = spentToday + decision.quoteSizeUsd
+
+                    if (!props.dryRun && projected > props.maxDailyBuyUsd) {
+                        val reason = "Daily live buy limit reached. spentToday=$spentToday projected=$projected max=${props.maxDailyBuyUsd}"
+                        log.warn("SKIP: {}", reason)
+
+                        tradeDecisionLogRepository.save(
+                            TradeDecisionLog(
+                                productId = snapshot.productId,
+                                decisionType = "SKIP",
+                                reason = reason,
+                                price = snapshot.price,
+                                change24hPercent = snapshot.change24hPercent,
+                                usdAvailable = snapshot.usdAvailable,
+                                quoteSizeUsd = decision.quoteSizeUsd,
+                                dryRun = props.dryRun,
+                            )
+                        ).thenReturn(Unit)
+                    } else if (props.dryRun) {
+                        log.warn(
+                            "DRY RUN: would BUY {} of {}. Reason: {}",
+                            decision.quoteSizeUsd,
+                            decision.productId,
+                            decision.reason
+                        )
+
+                        tradeDecisionLogRepository.save(
+                            TradeDecisionLog(
+                                productId = snapshot.productId,
+                                decisionType = "BUY",
+                                reason = decision.reason,
+                                price = snapshot.price,
+                                change24hPercent = snapshot.change24hPercent,
+                                usdAvailable = snapshot.usdAvailable,
+                                quoteSizeUsd = decision.quoteSizeUsd,
+                                dryRun = true,
+                            )
+                        ).thenReturn(Unit)
+                    } else {
+                        log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
+
+                        coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd)
+                            .flatMap { response ->
+                                tradeDecisionLogRepository.save(
+                                    TradeDecisionLog(
+                                        productId = snapshot.productId,
+                                        decisionType = "BUY",
+                                        reason = decision.reason,
+                                        price = snapshot.price,
+                                        change24hPercent = snapshot.change24hPercent,
+                                        usdAvailable = snapshot.usdAvailable,
+                                        quoteSizeUsd = decision.quoteSizeUsd,
+                                        dryRun = false,
+                                        coinbaseSuccess = response.success,
+                                        errorMessage = response.errorResponse?.toString(),
+                                    )
+                                )
+                            }
+                            .thenReturn(Unit)
+                    }
+                }
         }
     }
 }
