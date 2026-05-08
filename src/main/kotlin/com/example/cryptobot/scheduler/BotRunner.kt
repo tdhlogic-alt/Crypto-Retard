@@ -50,6 +50,16 @@ class BotRunner(
                         )
                     }
             )
+            .doOnSubscribe {
+                log.info("Bot tick started")
+            }
+            .doOnSuccess {
+                log.info("Bot tick completed")
+            }
+            .doOnError { ex ->
+                log.error("Bot tick failed", ex)
+            }
+            .subscribe()
     }
 
     private fun buildSnapshot(): Mono<MarketSnapshot> {
