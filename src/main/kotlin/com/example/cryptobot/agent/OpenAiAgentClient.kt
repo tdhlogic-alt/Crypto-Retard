@@ -1,0 +1,110 @@
+package com.example.cryptobot.agent
+
+import com.example.cryptobot.config.BotProperties
+import com.example.cryptobot.config.OpenAiProperties
+import com.example.cryptobot.strategy.MarketSnapshot
+import com.fasterxml.jackson.databind.ObjectMapper
+import org.springframework.stereotype.Component
+import org.springframework.web.reactive.function.client.WebClient
+import reactor.core.publisher.Mono
+
+@Component
+class OpenAiAgentClient(
+    private val openAiProps: OpenAiProperties,
+    private val botProps: BotProperties,
+    private val objectMapper: ObjectMapper,
+) {
+    private val webClient = WebClient.builder()
+        .baseUrl("https://api.openai.com")
+        .build()
+
+    fun decide(snapshot: MarketSnapshot): Mono<AgentTradeDecision> {
+        if (openAiProps.apiKey.isBlank()) {
+            return Mono.just(
+                AgentTradeDecision(
+                    action = "SKIP",
+                    productId = snapshot.productId,
+                    reason = "OpenAI API key not configured",
+                )
+            )
+        }
+
+        val prompt = """
+            You are a conservative crypto trading decision engine.
+            
+            You may only recommend BUY or SKIP.
+            You may only trade ${botProps.productIds}.
+            Do not recommend sells.
+            Do not recommend leverage.
+            Do not recommend more than ${botProps.maxBuyQuoteSizeUsd} USD.
+            
+            Market snapshot:
+            productId=${snapshot.productId}
+            price=${snapshot.price}
+            change24hPercent=${snapshot.change24hPercent}
+            usdAvailable=${snapshot.usdAvailable}
+            
+            Existing configured buy size: ${botProps.buyQuoteSizeUsd}
+            
+            Return a conservative decision.
+        """.trimIndent()
+
+        val request = mapOf(
+            "model" to openAiProps.model,
+            "input" to prompt,
+            "text" to mapOf(
+                "format" to mapOf(
+                    "type" to "json_schema",
+                    "name" to "agent_trade_decision",
+                    "strict" to true,
+                    "schema" to mapOf(
+                        "type" to "object",
+                        "additionalProperties" to false,
+                        "properties" to mapOf(
+                            "action" to mapOf("type" to "string", "enum" to listOf("BUY", "SKIP")),
+                            "productId" to mapOf("type" to "string"),
+                            "quoteSizeUsd" to mapOf("type" to "string"),
+                            "confidence" to mapOf("type" to "number"),
+                            "reason" to mapOf("type" to "string")
+                        ),
+                        "required" to listOf("action", "productId", "quoteSizeUsd", "confidence", "reason")
+                    )
+                )
+            )
+        )
+
+        return webClient.post()
+            .uri("/v1/responses")
+            .headers { it.setBearerAuth(openAiProps.apiKey) }
+            .bodyValue(request)
+            .retrieve()
+            .bodyToMono(String::class.java)
+            .map { body ->
+                val root = objectMapper.readTree(body)
+                val text = root["output"]?.firstOrNull()
+                    ?.get("content")?.firstOrNull()
+                    ?.get("text")?.asText()
+                    ?: error("No structured output text from OpenAI")
+
+                val json = objectMapper.readTree(text)
+
+                AgentTradeDecision(
+                    action = json["action"].asText(),
+                    productId = json["productId"].asText(),
+                    quoteSizeUsd = json["quoteSizeUsd"].asText().toBigDecimal(),
+                    confidence = json["confidence"].decimalValue(),
+                    reason = json["reason"].asText(),
+                )
+            }
+            .onErrorResume { ex ->
+                Mono.just(
+                    AgentTradeDecision(
+                        action = "SKIP",
+                        productId = snapshot.productId,
+                        confidence = java.math.BigDecimal.ZERO,
+                        reason = "OpenAI agent failed: ${ex.message}",
+                    )
+                )
+            }
+    }
+}
