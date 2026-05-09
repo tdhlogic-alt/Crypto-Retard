@@ -31,5 +31,5 @@ data class CoinbaseProperties(
 @ConfigurationProperties(prefix = "openai")
 data class OpenAiProperties(
     val apiKey: String = "",
-    val model: String = "gpt-5.5-mini",
+    val model: String = "gpt-5.4-mini",
 )

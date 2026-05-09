@@ -41,8 +41,14 @@ class BotRunner(
         buildSnapshots()
             .flatMapMany { snapshots -> Flux.fromIterable(snapshots) }
             .flatMap { snapshot ->
-                val decision = strategy.decide(snapshot)
-                execute(snapshot, decision)
+                if (props.agentEnabled) {
+                    agentClient.decide(snapshot)
+                        .map(agentValidator::validate)
+                        .flatMap { decision -> execute(snapshot, decision) }
+                } else {
+                    val decision = strategy.decide(snapshot)
+                    execute(snapshot, decision)
+                }
             }
             .then()
             .retryWhen(
