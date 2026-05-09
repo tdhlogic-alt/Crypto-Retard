@@ -6,6 +6,7 @@ import com.example.cryptobot.strategy.MarketSnapshot
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.bodyToMono
 import reactor.core.publisher.Mono
 
 @Component
@@ -78,6 +79,13 @@ class OpenAiAgentClient(
             .headers { it.setBearerAuth(openAiProps.apiKey) }
             .bodyValue(request)
             .retrieve()
+            .onStatus({ it.isError }) { response ->
+                response.bodyToMono<String>()
+                    .defaultIfEmpty("")
+                    .flatMap { body ->
+                        Mono.error(RuntimeException("OpenAI failed: status=${response.statusCode()} body=$body"))
+                    }
+            }
             .bodyToMono(String::class.java)
             .map { body ->
                 val root = objectMapper.readTree(body)
