@@ -34,6 +34,7 @@ bot:
   max-single-buy-usd: "50.00"
   max-daily-buy-usd: "100.00"
   dip-threshold-percent: "5.0" # buy only when 24h drop >= this threshold
+  discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
 resilience4j:
   circuitbreaker:

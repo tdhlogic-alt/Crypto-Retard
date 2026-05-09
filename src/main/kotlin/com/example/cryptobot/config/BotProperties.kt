@@ -14,6 +14,7 @@ data class BotProperties(
     val maxSingleBuyUsd: BigDecimal = BigDecimal("50.00"),
     val maxDailyBuyUsd: BigDecimal = BigDecimal("100.00"),
     val dipThresholdPercent: BigDecimal = BigDecimal("5.0"),
+    val discordWebhookUrl: String = "",
 )
 
 @ConfigurationProperties(prefix = "coinbase")
