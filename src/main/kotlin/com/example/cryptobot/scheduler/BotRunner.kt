@@ -1,5 +1,6 @@
 package com.example.cryptobot.scheduler
 
+import com.example.cryptobot.alerts.DiscordAlertClient
 import com.example.cryptobot.coinbase.CoinbaseClient
 import com.example.cryptobot.config.BotProperties
 import com.example.cryptobot.strategy.MarketSnapshot
@@ -18,6 +19,7 @@ class BotRunner(
     private val props: BotProperties,
     private val coinbaseClient: CoinbaseClient,
     private val strategy: SimpleDipBuyStrategy,
+    private val alerts: DiscordAlertClient,
 ) : CommandLineRunner {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -54,7 +56,10 @@ class BotRunner(
             )
             .doOnSubscribe { log.info("Bot tick started") }
             .doOnSuccess { log.info("Bot tick completed") }
-            .doOnError { ex -> log.error("Bot tick failed", ex) }
+            .doOnError { ex ->
+                log.error("Bot tick failed", ex)
+                alerts.send("🚨 Crypto bot failed: `${ex.message ?: ex::class.simpleName}`").block()
+            }
             .block()
         log.info("Bot job finished successfully")
     }
@@ -99,16 +104,16 @@ class BotRunner(
 
         is TradingDecision.Buy -> {
             if (props.dryRun) {
-                log.warn(
-                    "DRY RUN: would BUY {} of {}. Reason: {}",
-                    decision.quoteSizeUsd,
-                    decision.productId,
-                    decision.reason
-                )
+                val message = "🧪 DRY RUN: would BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
+                log.warn(message)
+                alerts.send(message).thenReturn(Unit)
                 Mono.just(Unit)
             } else {
-                log.warn("LIVE TRADE: BUY {} of {}. Reason: {}", decision.quoteSizeUsd, decision.productId, decision.reason)
-                coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd).thenReturn(Unit)
+                val message = "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
+                log.warn(message)
+                alerts.send(message)
+                    .then(coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd))
+                    .thenReturn(Unit)
             }
         }
     }
