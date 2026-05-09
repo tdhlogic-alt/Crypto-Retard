@@ -106,13 +106,36 @@ class BotRunner(
             if (props.dryRun) {
                 val message = "🧪 DRY RUN: would BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                 log.warn(message)
+
                 alerts.send(message)
                     .thenReturn(Unit)
             } else {
+                if (!props.liveTradingEnabled) {
+                    val message = "🛑 LIVE TRADE BLOCKED: liveTradingEnabled=false. Would have bought ${decision.quoteSizeUsd} of ${decision.productId}"
+                    log.warn(message)
+
+                    alerts.send(message)
+                        .thenReturn(Unit)
+                }
+
+                if (decision.quoteSizeUsd > props.maxBuyQuoteSizeUsd) {
+                    val message = "🛑 LIVE TRADE BLOCKED: quoteSizeUsd=${decision.quoteSizeUsd} exceeds max=${props.maxBuyQuoteSizeUsd}"
+                    log.warn(message)
+
+                    alerts.send(message)
+                        .thenReturn(Unit)
+                }
+
                 val message = "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                 log.warn(message)
+
                 alerts.send(message)
-                    .then(coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd))
+                    .then(
+                        coinbaseClient.createMarketBuy(
+                            decision.productId,
+                            decision.quoteSizeUsd
+                        )
+                    )
                     .thenReturn(Unit)
             }
         }
