@@ -22,6 +22,7 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("com.nimbusds:nimbus-jose-jwt:9.39")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.78")
+    implementation("com.google.cloud:google-cloud-firestore:3.30.1")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("io.projectreactor:reactor-test")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
