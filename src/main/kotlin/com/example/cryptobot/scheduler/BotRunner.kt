@@ -106,8 +106,8 @@ class BotRunner(
             if (props.dryRun) {
                 val message = "🧪 DRY RUN: would BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                 log.warn(message)
-                alerts.send(message).thenReturn(Unit)
-                Mono.just(Unit)
+                alerts.send(message)
+                    .thenReturn(Unit)
             } else {
                 val message = "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                 log.warn(message)
