@@ -56,6 +56,7 @@ class BotRunner(
             .doOnSuccess { log.info("Bot tick completed") }
             .doOnError { ex -> log.error("Bot tick failed", ex) }
             .block()
+        log.info("Bot job finished successfully")
     }
 
     private fun buildSnapshot(): Mono<MarketSnapshot> {
