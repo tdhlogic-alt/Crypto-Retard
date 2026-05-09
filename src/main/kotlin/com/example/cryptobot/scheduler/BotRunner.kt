@@ -3,6 +3,7 @@ package com.example.cryptobot.scheduler
 import com.example.cryptobot.alerts.DiscordAlertClient
 import com.example.cryptobot.coinbase.CoinbaseClient
 import com.example.cryptobot.config.BotProperties
+import com.example.cryptobot.persistence.TradeLedgerClient
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.SimpleDipBuyStrategy
 import com.example.cryptobot.strategy.TradingDecision
@@ -13,6 +14,8 @@ import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
 import java.math.BigDecimal
 import java.time.Duration
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 @Component
 class BotRunner(
@@ -20,6 +23,7 @@ class BotRunner(
     private val coinbaseClient: CoinbaseClient,
     private val strategy: SimpleDipBuyStrategy,
     private val alerts: DiscordAlertClient,
+    private val ledger: TradeLedgerClient,
 ) : CommandLineRunner {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -99,7 +103,13 @@ class BotRunner(
     private fun execute(snapshot: MarketSnapshot, decision: TradingDecision): Mono<Unit> = when (decision) {
         is TradingDecision.Skip -> {
             log.info("SKIP: {}", decision.reason)
-            Mono.just(Unit)
+
+            ledger.record(
+                snapshot = snapshot,
+                decisionType = "SKIP",
+                reason = decision.reason,
+                dryRun = props.dryRun,
+            ).thenReturn(Unit)
         }
 
         is TradingDecision.Buy -> {
@@ -107,28 +117,112 @@ class BotRunner(
                 props.dryRun -> {
                     val message = "🧪 DRY RUN: would BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                     log.warn(message)
-                    alerts.send(message).thenReturn(Unit)
+
+                    ledger.record(
+                        snapshot = snapshot,
+                        decisionType = "BUY",
+                        reason = decision.reason,
+                        dryRun = true,
+                        quoteSizeUsd = decision.quoteSizeUsd,
+                    )
+                        .then(alerts.send(message))
+                        .thenReturn(Unit)
                 }
 
                 !props.liveTradingEnabled -> {
                     val message = "🛑 LIVE TRADE BLOCKED: liveTradingEnabled=false. Would have bought ${decision.quoteSizeUsd} of ${decision.productId}"
                     log.warn(message)
-                    alerts.send(message).thenReturn(Unit)
+
+                    ledger.record(
+                        snapshot = snapshot,
+                        decisionType = "BLOCKED_BUY",
+                        reason = message,
+                        dryRun = false,
+                        quoteSizeUsd = decision.quoteSizeUsd,
+                    )
+                        .then(alerts.send(message))
+                        .thenReturn(Unit)
                 }
 
                 decision.quoteSizeUsd > props.maxBuyQuoteSizeUsd -> {
                     val message = "🛑 LIVE TRADE BLOCKED: quoteSizeUsd=${decision.quoteSizeUsd} exceeds max=${props.maxBuyQuoteSizeUsd}"
                     log.warn(message)
-                    alerts.send(message).thenReturn(Unit)
+
+                    ledger.record(
+                        snapshot = snapshot,
+                        decisionType = "BLOCKED_BUY",
+                        reason = message,
+                        dryRun = false,
+                        quoteSizeUsd = decision.quoteSizeUsd,
+                    )
+                        .then(alerts.send(message))
+                        .thenReturn(Unit)
                 }
 
                 else -> {
-                    val message = "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
-                    log.warn(message)
+                    val recentSince = Instant.now().minus(30, ChronoUnit.MINUTES)
+                    val todaySince = Instant.now().truncatedTo(ChronoUnit.DAYS)
 
-                    alerts.send(message)
-                        .then(coinbaseClient.createMarketBuy(decision.productId, decision.quoteSizeUsd))
-                        .thenReturn(Unit)
+                    ledger.hasRecentLiveBuy(decision.productId, recentSince)
+                        .flatMap { hasRecentBuy ->
+                            if (hasRecentBuy) {
+                                val message = "🛑 LIVE TRADE BLOCKED: recent live BUY already exists for ${decision.productId}"
+                                log.warn(message)
+
+                                ledger.record(
+                                    snapshot = snapshot,
+                                    decisionType = "BLOCKED_BUY",
+                                    reason = message,
+                                    dryRun = false,
+                                    quoteSizeUsd = decision.quoteSizeUsd,
+                                )
+                                    .then(alerts.send(message))
+                                    .thenReturn(Unit)
+                            } else {
+                                ledger.liveBuyTotalSince(todaySince)
+                                    .flatMap { spentToday ->
+                                        val projectedSpend = spentToday + decision.quoteSizeUsd
+
+                                        if (projectedSpend > props.maxDailyBuyUsd) {
+                                            val message = "🛑 LIVE TRADE BLOCKED: daily buy limit exceeded. spentToday=$spentToday projected=$projectedSpend max=${props.maxDailyBuyUsd}"
+                                            log.warn(message)
+
+                                            ledger.record(
+                                                snapshot = snapshot,
+                                                decisionType = "BLOCKED_BUY",
+                                                reason = message,
+                                                dryRun = false,
+                                                quoteSizeUsd = decision.quoteSizeUsd,
+                                            )
+                                                .then(alerts.send(message))
+                                                .thenReturn(Unit)
+                                        } else {
+                                            val message = "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
+                                            log.warn(message)
+
+                                            alerts.send(message)
+                                                .then(
+                                                    coinbaseClient.createMarketBuy(
+                                                        decision.productId,
+                                                        decision.quoteSizeUsd
+                                                    )
+                                                )
+                                                .flatMap { response ->
+                                                    ledger.record(
+                                                        snapshot = snapshot,
+                                                        decisionType = "BUY",
+                                                        reason = decision.reason,
+                                                        dryRun = false,
+                                                        quoteSizeUsd = decision.quoteSizeUsd,
+                                                        coinbaseSuccess = response.success,
+                                                        errorMessage = response.errorResponse?.toString(),
+                                                    )
+                                                }
+                                                .thenReturn(Unit)
+                                        }
+                                    }
+                            }
+                        }
                 }
             }
         }
