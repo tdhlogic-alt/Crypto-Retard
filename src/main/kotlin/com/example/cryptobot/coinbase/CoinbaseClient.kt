@@ -20,10 +20,9 @@ class CoinbaseClient(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    private val httpClient = HttpClient.newConnection()
+    private val httpClient = HttpClient.create()
         .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000)
         .responseTimeout(Duration.ofSeconds(30))
-        .secure()
 
     private val webClient = WebClient.builder()
         .baseUrl(props.baseUrl)
