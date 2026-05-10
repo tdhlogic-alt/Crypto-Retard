@@ -14,46 +14,42 @@ class AgentDecisionValidator(
             return TradingDecision.Skip("Agent skipped: ${decision.reason}")
         }
 
-        if (decision.action != "BUY") {
-            return TradingDecision.Skip("Agent action rejected: ${decision.action}")
-        }
-
-        if (decision.action == "SELL") {
-            if (decision.baseSize <= BigDecimal.ZERO) {
-                return TradingDecision.Skip("Agent sell size invalid")
-            }
-
-            return TradingDecision.Sell(
-                productId = decision.productId,
-                baseSize = decision.baseSize,
-                reason = "Agent SELL confidence=${decision.confidence}: ${decision.reason}"
-            )
-        }
-
         if (decision.productId !in props.productIds) {
-            return TradingDecision.Skip(
-                "Agent product rejected: ${decision.productId}. Allowed=${props.productIds}"
-            )
+            return TradingDecision.Skip("Agent product rejected: ${decision.productId}. Allowed=${props.productIds}")
         }
 
         if (decision.confidence < props.agentMinConfidence) {
             return TradingDecision.Skip("Agent confidence too low: ${decision.confidence}")
         }
 
-        if (decision.quoteSizeUsd <= BigDecimal.ZERO) {
-            return TradingDecision.Skip("Agent quote size invalid: ${decision.quoteSizeUsd}")
-        }
+        return when (decision.action) {
+            "BUY" -> {
+                if (decision.quoteSizeUsd <= BigDecimal.ZERO) {
+                    TradingDecision.Skip("Agent buy quote size invalid: ${decision.quoteSizeUsd}")
+                } else if (decision.quoteSizeUsd > props.maxBuyQuoteSizeUsd) {
+                    TradingDecision.Skip("Agent quote size exceeds max: ${decision.quoteSizeUsd} > ${props.maxBuyQuoteSizeUsd}")
+                } else {
+                    TradingDecision.Buy(
+                        productId = decision.productId,
+                        quoteSizeUsd = decision.quoteSizeUsd,
+                        reason = "Agent BUY confidence=${decision.confidence}: ${decision.reason}"
+                    )
+                }
+            }
 
-        if (decision.quoteSizeUsd > props.maxBuyQuoteSizeUsd) {
-            return TradingDecision.Skip(
-                "Agent quote size exceeds max: ${decision.quoteSizeUsd} > ${props.maxBuyQuoteSizeUsd}"
-            )
-        }
+            "SELL" -> {
+                if (decision.baseSize <= BigDecimal.ZERO) {
+                    TradingDecision.Skip("Agent sell size invalid: ${decision.baseSize}")
+                } else {
+                    TradingDecision.Sell(
+                        productId = decision.productId,
+                        baseSize = decision.baseSize,
+                        reason = "Agent SELL confidence=${decision.confidence}: ${decision.reason}"
+                    )
+                }
+            }
 
-        return TradingDecision.Buy(
-            productId = decision.productId,
-            quoteSizeUsd = decision.quoteSizeUsd,
-            reason = "Agent BUY confidence=${decision.confidence}: ${decision.reason}"
-        )
+            else -> TradingDecision.Skip("Agent action rejected: ${decision.action}")
+        }
     }
 }

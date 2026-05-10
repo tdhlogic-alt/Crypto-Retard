@@ -296,7 +296,72 @@ class BotRunner(
             }
         }
         is TradingDecision.Sell -> {
-            TODO()
+            when {
+                props.dryRun -> {
+                    val message = "🧪 DRY RUN: would SELL ${decision.baseSize} of ${decision.productId}. Reason: ${decision.reason}"
+                    log.warn(message)
+
+                    ledger.record(
+                        snapshot = snapshot,
+                        decisionType = "SELL",
+                        reason = decision.reason,
+                        dryRun = true,
+                        baseSize = decision.baseSize,
+                    )
+                        .then(alerts.send(message))
+                        .thenReturn(Unit)
+                }
+
+                !props.liveTradingEnabled -> {
+                    val message = "🛑 LIVE SELL BLOCKED: liveTradingEnabled=false. Would have sold ${decision.baseSize} of ${decision.productId}"
+                    log.warn(message)
+
+                    ledger.record(
+                        snapshot = snapshot,
+                        decisionType = "BLOCKED_SELL",
+                        reason = message,
+                        dryRun = false,
+                        baseSize = decision.baseSize,
+                    )
+                        .then(alerts.send(message))
+                        .thenReturn(Unit)
+                }
+
+                decision.baseSize > snapshot.cryptoBalance -> {
+                    val message = "🛑 LIVE SELL BLOCKED: baseSize=${decision.baseSize} exceeds available balance=${snapshot.cryptoBalance}"
+                    log.warn(message)
+
+                    ledger.record(
+                        snapshot = snapshot,
+                        decisionType = "BLOCKED_SELL",
+                        reason = message,
+                        dryRun = false,
+                        baseSize = decision.baseSize,
+                    )
+                        .then(alerts.send(message))
+                        .thenReturn(Unit)
+                }
+
+                else -> {
+                    val message = "🚨 LIVE TRADE: SELL ${decision.baseSize} of ${decision.productId}. Reason: ${decision.reason}"
+                    log.warn(message)
+
+                    alerts.send(message)
+                        .then(coinbaseClient.createMarketSell(decision.productId, decision.baseSize))
+                        .flatMap { response ->
+                            ledger.record(
+                                snapshot = snapshot,
+                                decisionType = "SELL",
+                                reason = decision.reason,
+                                dryRun = false,
+                                baseSize = decision.baseSize,
+                                coinbaseSuccess = response.success,
+                                errorMessage = response.errorResponse?.toString(),
+                            )
+                        }
+                        .thenReturn(Unit)
+                }
+            }
         }
     }
 }

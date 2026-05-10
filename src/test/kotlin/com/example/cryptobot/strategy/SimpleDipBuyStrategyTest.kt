@@ -21,6 +21,7 @@ class SimpleDipBuyStrategyTest {
                 priceChange24h = BigDecimal("-3200"),
                 priceTo24hHighPercent = BigDecimal("96.15"),
                 priceTo24hLowPercent = BigDecimal("104.16"),
+                cryptoBalance = BigDecimal("0.25")
             )        )
         assertTrue(decision is TradingDecision.Buy)
     }
@@ -40,6 +41,7 @@ class SimpleDipBuyStrategyTest {
                 priceChange24h = BigDecimal("-3200"),
                 priceTo24hHighPercent = BigDecimal("96.15"),
                 priceTo24hLowPercent = BigDecimal("104.16"),
+                cryptoBalance = BigDecimal("0.25")
             )        )
         assertTrue(decision is TradingDecision.Buy)
     }

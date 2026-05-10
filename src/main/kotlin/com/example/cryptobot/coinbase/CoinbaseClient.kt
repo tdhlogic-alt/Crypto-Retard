@@ -97,9 +97,9 @@ class CoinbaseClient(
             }
     }
 
-    fun createMarketSell(productId: String, quoteSizeUsd: BigDecimal): Mono<CreateOrderResponse> {
+    fun createMarketSell(productId: String, baseSize: BigDecimal): Mono<CreateOrderResponse> {
         val path = "/api/v3/brokerage/orders"
-        val request = CreateOrderRequest.marketSell(productId, quoteSizeUsd)
+        val request = CreateOrderRequest.marketSell(productId, baseSize)
 
         return webClient.post()
             .uri(path)
@@ -115,9 +115,6 @@ class CoinbaseClient(
                     }
             }
             .bodyToMono(CreateOrderResponse::class.java)
-            .doOnSubscribe { log.warn("Submitting Coinbase market sell: product={} quoteSizeUsd={}", productId, quoteSizeUsd) }
-            .doOnError { ex ->
-                log.error("Coinbase request failed: {}", ex.message, ex)
-            }
+            .doOnSubscribe { log.warn("Submitting Coinbase market sell: product={} baseSize={}", productId, baseSize) }
     }
 }

@@ -45,7 +45,7 @@ class OpenAiAgentClient(
             - trend continuation potential
             - risk/reward
             
-            You may only recommend BUY or SKIP.
+            You may recommend BUY, SELL, or SKIP.
             
             You must remain risk-aware.
             
@@ -60,6 +60,7 @@ class OpenAiAgentClient(
             price=${snapshot.price}
             change24hPercent=${snapshot.change24hPercent}
             usdAvailable=${snapshot.usdAvailable}
+            cryptoBalance=${snapshot.cryptoBalance}
             
             Existing configured buy size: ${botProps.buyQuoteSizeUsd}
             
@@ -86,7 +87,15 @@ class OpenAiAgentClient(
                             "score" to mapOf("type" to "number"),
                             "baseSize" to mapOf("type" to "string"),
                         ),
-                        "required" to listOf("action", "productId", "quoteSizeUsd", "confidence", "reason")
+                        "required" to listOf(
+                            "action",
+                            "productId",
+                            "quoteSizeUsd",
+                            "baseSize",
+                            "confidence",
+                            "reason",
+                            "score"
+                        )
                     )
                 )
             ),

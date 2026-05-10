@@ -28,6 +28,7 @@ class TradeLedgerClient(
         coinbaseOrderId: String? = null,
         coinbaseSuccess: Boolean? = null,
         errorMessage: String? = null,
+        baseSize: BigDecimal? = null,
     ): Mono<Void> {
         return Mono.fromCallable {
             val doc = mapOf(
@@ -43,6 +44,7 @@ class TradeLedgerClient(
                 "coinbaseOrderId" to coinbaseOrderId,
                 "coinbaseSuccess" to coinbaseSuccess,
                 "errorMessage" to errorMessage,
+                "baseSize" to baseSize?.toPlainString(),
             )
 
             collection.add(doc).get()

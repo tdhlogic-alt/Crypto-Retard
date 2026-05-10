@@ -52,16 +52,15 @@ data class CreateOrderRequest(
             productId = productId,
             side = "BUY",
             orderConfiguration = OrderConfiguration(
-                marketMarketIoc = MarketMarketIoc(quoteSize = quoteSizeUsd.toPlainString())
-            )
+                marketMarketIoc = MarketMarketIoc(quoteSize = quoteSizeUsd.toPlainString())            )
         )
 
-        fun marketSell(productId: String, quoteSizeUsd: BigDecimal) = CreateOrderRequest(
+        fun marketSell(productId: String, baseSize: BigDecimal) = CreateOrderRequest(
             clientOrderId = UUID.randomUUID().toString(),
             productId = productId,
             side = "SELL",
             orderConfiguration = OrderConfiguration(
-                marketMarketIoc = MarketMarketIoc(quoteSize = quoteSizeUsd.toPlainString())
+                marketMarketIoc = MarketMarketIoc(baseSize = baseSize.toPlainString())
             )
         )
     }
@@ -72,7 +71,8 @@ data class OrderConfiguration(
 )
 
 data class MarketMarketIoc(
-    @JsonProperty("quote_size") val quoteSize: String,
+    @JsonProperty("quote_size") val quoteSize: String? = null,
+    @JsonProperty("base_size") val baseSize: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
