@@ -1,7 +1,6 @@
 package com.example.cryptobot.scheduler
 
 import com.example.cryptobot.agent.AgentDecisionValidator
-import com.example.cryptobot.agent.AgentTradeDecision
 import com.example.cryptobot.agent.OpenAiAgentClient
 import com.example.cryptobot.alerts.DiscordAlertClient
 import com.example.cryptobot.coinbase.CoinbaseClient
@@ -181,9 +180,25 @@ class BotRunner(
                                 val candleHigh7d = highs.maxOrNull() ?: BigDecimal.ZERO
                                 val candleLow7d = lows.minOrNull() ?: BigDecimal.ZERO
 
-                                ledger.getPosition(productId, price)
-                                    .map { position ->
-                                        productId to MarketSnapshot(
+                                val trend1hPercent = pctChange(close1hAgo, price)
+                                val trend4hPercent = pctChange(close4hAgo, price)
+                                val trend24hPercent = pctChange(close24hAgo, price)
+                                val trend7dPercent = pctChange(close7dAgo, price)
+                                val rsi14 = calculateRsi(closes)
+                                val volatility24hPercent = calculateVolatilityPercent(closes)
+                                val marketRegime = classifyMarketRegime(
+                                    trend24hPercent = trend24hPercent,
+                                    trend7dPercent = trend7dPercent,
+                                    rsi14 = rsi14,
+                                    volatility24hPercent = volatility24hPercent,
+                                )
+
+                                ledger.scorePendingOutcomes(productId, price)
+                                    .then(ledger.getPosition(productId, price))
+                                    .flatMap { position ->
+                                        ledger.getReasonCodeStats(position.activeReasonCode, Instant.now().minus(30, ChronoUnit.DAYS))
+                                            .map { reasonStats ->
+                                                productId to MarketSnapshot(
                                             productId = productId,
                                             price = price,
                                             change24hPercent = product.pricePercentageChange24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
@@ -205,14 +220,14 @@ class BotRunner(
                                             portfolioUsdValue = BigDecimal.ZERO,
                                             portfolioAllocationPercent = BigDecimal.ZERO,
 
-                                            trend1hPercent = pctChange(close1hAgo, price),
-                                            trend4hPercent = pctChange(close4hAgo, price),
-                                            trend24hPercent = pctChange(close24hAgo, price),
-                                            rsi14 = calculateRsi(closes),
-                                            volatility24hPercent = calculateVolatilityPercent(closes),
+                                            trend1hPercent = trend1hPercent,
+                                            trend4hPercent = trend4hPercent,
+                                            trend24hPercent = trend24hPercent,
+                                            rsi14 = rsi14,
+                                            volatility24hPercent = volatility24hPercent,
                                             candleHigh24h = candleHigh24h,
                                             candleLow24h = candleLow24h,
-                                            trend7dPercent = pctChange(close7dAgo, price),
+                                            trend7dPercent = trend7dPercent,
                                             candleHigh7d = candleHigh7d,
                                             candleLow7d = candleLow7d,
                                             avgCostBasis = position.avgCostBasis,
@@ -224,8 +239,17 @@ class BotRunner(
                                             drawdownFromHighPercent = position.drawdownFromHighPercent,
                                             buyCount = position.buyCount,
                                             sellCount = position.sellCount,
+                                            marketRegime = marketRegime,
+                                            reasonCode30dWinRate = reasonStats.winRatePercent,
+                                            reasonCode30dCount = reasonStats.count,
+                                            activeThesis = position.activeThesis,
+                                            activeInvalidationCondition = position.activeInvalidationCondition,
+                                            activeProfitTargetPercent = position.activeProfitTargetPercent,
+                                            activeStopLossPercent = position.activeStopLossPercent,
+                                            activeMaxHoldHours = position.activeMaxHoldHours,
                                         )
                                     }
+                                }
                             }
                     }
                     .collectList()
@@ -280,6 +304,12 @@ class BotRunner(
                         reason = decision.reason,
                         dryRun = true,
                         quoteSizeUsd = decision.quoteSizeUsd,
+                        reasonCode = decision.reasonCode,
+                        thesis = decision.thesis,
+                        invalidationCondition = decision.invalidationCondition,
+                        profitTargetPercent = decision.profitTargetPercent,
+                        stopLossPercent = decision.stopLossPercent,
+                        maxHoldHours = decision.maxHoldHours,
                     )
                         .then(alerts.send(message))
                         .thenReturn(Unit)
@@ -373,9 +403,26 @@ class BotRunner(
                                                         dryRun = false,
                                                         quoteSizeUsd = decision.quoteSizeUsd,
                                                         coinbaseSuccess = response.success,
+                                                        reasonCode = decision.reasonCode,
+                                                        thesis = decision.thesis,
+                                                        invalidationCondition = decision.invalidationCondition,
+                                                        profitTargetPercent = decision.profitTargetPercent,
+                                                        stopLossPercent = decision.stopLossPercent,
+                                                        maxHoldHours = decision.maxHoldHours,
                                                         errorMessage = response.errorResponse?.toString(),
                                                     ).then(
-                                                        if (response.success) ledger.applyLiveBuy(snapshot, decision.quoteSizeUsd) else Mono.empty()
+                                                        if (response.success) {
+                                                            ledger.applyLiveBuy(
+                                                                snapshot = snapshot,
+                                                                quoteSizeUsd = decision.quoteSizeUsd,
+                                                                reasonCode = decision.reasonCode,
+                                                                thesis = decision.thesis,
+                                                                invalidationCondition = decision.invalidationCondition,
+                                                                profitTargetPercent = decision.profitTargetPercent,
+                                                                stopLossPercent = decision.stopLossPercent,
+                                                                maxHoldHours = decision.maxHoldHours,
+                                                            )
+                                                        } else Mono.empty()
                                                     )
                                                 }
                                                 .thenReturn(Unit)
@@ -398,6 +445,7 @@ class BotRunner(
                         reason = decision.reason,
                         dryRun = true,
                         baseSize = decision.baseSize,
+                        reasonCode = decision.reasonCode,
                     )
                         .then(alerts.send(message))
                         .thenReturn(Unit)
@@ -447,14 +495,32 @@ class BotRunner(
                                 dryRun = false,
                                 baseSize = decision.baseSize,
                                 coinbaseSuccess = response.success,
+                                reasonCode = decision.reasonCode,
                                 errorMessage = response.errorResponse?.toString(),
                             ).then(
-                                if (response.success) ledger.applyLiveSell(snapshot, decision.baseSize) else Mono.empty()
+                                if (response.success) ledger.applyLiveSell(snapshot, decision.baseSize, decision.reasonCode) else Mono.empty()
                             )
                         }
                         .thenReturn(Unit)
                 }
             }
+        }
+    }
+
+    private fun classifyMarketRegime(
+        trend24hPercent: BigDecimal,
+        trend7dPercent: BigDecimal,
+        rsi14: BigDecimal,
+        volatility24hPercent: BigDecimal,
+    ): String {
+        return when {
+            trend24hPercent <= BigDecimal("-7.0") || trend7dPercent <= BigDecimal("-15.0") -> "CRASH"
+            volatility24hPercent >= BigDecimal("5.0") -> "HIGH_VOLATILITY"
+            trend7dPercent >= BigDecimal("8.0") && trend24hPercent >= BigDecimal("1.0") -> "BULL_TREND"
+            trend7dPercent <= BigDecimal("-8.0") && trend24hPercent <= BigDecimal("-1.0") -> "BEAR_TREND"
+            trend7dPercent < BigDecimal.ZERO && trend24hPercent > BigDecimal("2.0") && rsi14 < BigDecimal("60") -> "RECOVERY"
+            trend7dPercent.abs() <= BigDecimal("4.0") -> "SIDEWAYS"
+            else -> "UNKNOWN"
         }
     }
 

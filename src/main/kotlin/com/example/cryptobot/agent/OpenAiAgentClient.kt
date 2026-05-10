@@ -56,6 +56,14 @@ class OpenAiAgentClient(
             Assign:
             - confidence (0.0-1.0)
             - score (0-100 relative opportunity score)
+            - reasonCode from exactly one of:
+              OVERSOLD_BOUNCE, BREAKOUT_CONTINUATION, MOMENTUM_REVERSAL, PROFIT_PROTECTION,
+              TRAILING_STOP, STOP_LOSS, THESIS_INVALIDATED, REBALANCE, NO_CLEAR_EDGE
+            - thesis: concise trade thesis for BUY decisions, otherwise empty string
+            - invalidationCondition: concise condition that would make the BUY thesis invalid, otherwise empty string
+            - profitTargetPercent: target profit percent for BUY decisions, otherwise 0
+            - stopLossPercent: thesis-based stop loss percent for BUY decisions, otherwise 0
+            - maxHoldHours: intended max holding period for BUY decisions, otherwise 0
             
             Prefer higher scores only for the strongest opportunities.
             
@@ -77,6 +85,14 @@ class OpenAiAgentClient(
             drawdownFromHighPercent=${snapshot.drawdownFromHighPercent}
             buyCount=${snapshot.buyCount}
             sellCount=${snapshot.sellCount}
+            marketRegime=${snapshot.marketRegime}
+            reasonCode30dWinRate=${snapshot.reasonCode30dWinRate}
+            reasonCode30dCount=${snapshot.reasonCode30dCount}
+            activeThesis=${snapshot.activeThesis}
+            activeInvalidationCondition=${snapshot.activeInvalidationCondition}
+            activeProfitTargetPercent=${snapshot.activeProfitTargetPercent}
+            activeStopLossPercent=${snapshot.activeStopLossPercent}
+            activeMaxHoldHours=${snapshot.activeMaxHoldHours}
             trend1hPercent=${snapshot.trend1hPercent}
             trend4hPercent=${snapshot.trend4hPercent}
             trend24hPercent=${snapshot.trend24hPercent}
@@ -88,6 +104,16 @@ class OpenAiAgentClient(
             candleHigh7d=${snapshot.candleHigh7d}
             candleLow7d=${snapshot.candleLow7d}
             
+            Use market regime, thesis, and position awareness:
+            - BULL_TREND: prefer buying pullbacks and holding winners; avoid selling solely because RSI is high.
+            - BEAR_TREND: require stronger BUY evidence; cut/avoid weak altcoin setups.
+            - SIDEWAYS: favor mean reversion; take profits sooner near resistance.
+            - HIGH_VOLATILITY or CRASH: be defensive; avoid low-conviction buys; protect profitable positions.
+            - RECOVERY: allow smaller starter buys when momentum confirms recovery.
+            - For BUY, create a specific thesis, invalidationCondition, profitTargetPercent, stopLossPercent, and maxHoldHours.
+            - For SELL, compare current market behavior against activeThesis and activeInvalidationCondition when present.
+            - Use reasonCode30dWinRate only as a weak prior; ignore it when reasonCode30dCount is low.
+
             Use portfolio and position awareness:
             - Avoid buying more of an asset that already has a large allocation.
             - Avoid repeated averaging down unless the setup is strong and risk/reward improved.
@@ -104,6 +130,7 @@ class OpenAiAgentClient(
             
             Prefer BUY over SKIP when momentum or dip conditions appear favorable, but remain risk-aware.
             For SELL, prefer partial exits; baseSize should usually be 25%-50% of cryptoBalance unless risk is extreme.
+            Keep reason <= ${botProps.maxAiReasonLength} characters.
         """.trimIndent()
 
         val request = mapOf(
@@ -125,6 +152,25 @@ class OpenAiAgentClient(
                             "reason" to mapOf("type" to "string"),
                             "score" to mapOf("type" to "number"),
                             "baseSize" to mapOf("type" to "string"),
+                            "reasonCode" to mapOf(
+                                "type" to "string",
+                                "enum" to listOf(
+                                    "OVERSOLD_BOUNCE",
+                                    "BREAKOUT_CONTINUATION",
+                                    "MOMENTUM_REVERSAL",
+                                    "PROFIT_PROTECTION",
+                                    "TRAILING_STOP",
+                                    "STOP_LOSS",
+                                    "THESIS_INVALIDATED",
+                                    "REBALANCE",
+                                    "NO_CLEAR_EDGE",
+                                )
+                            ),
+                            "thesis" to mapOf("type" to "string"),
+                            "invalidationCondition" to mapOf("type" to "string"),
+                            "profitTargetPercent" to mapOf("type" to "string"),
+                            "stopLossPercent" to mapOf("type" to "string"),
+                            "maxHoldHours" to mapOf("type" to "integer"),
                         ),
                         "required" to listOf(
                             "action",
@@ -133,7 +179,13 @@ class OpenAiAgentClient(
                             "baseSize",
                             "confidence",
                             "reason",
-                            "score"
+                            "score",
+                            "reasonCode",
+                            "thesis",
+                            "invalidationCondition",
+                            "profitTargetPercent",
+                            "stopLossPercent",
+                            "maxHoldHours",
                         )
                     )
                 )
@@ -170,6 +222,12 @@ class OpenAiAgentClient(
                     reason = json["reason"].asText(),
                     score = BigDecimal(json["score"].asText()),
                     baseSize = json["baseSize"].asText().toBigDecimal(),
+                    reasonCode = json["reasonCode"].asText(),
+                    thesis = json["thesis"].asText(),
+                    invalidationCondition = json["invalidationCondition"].asText(),
+                    profitTargetPercent = json["profitTargetPercent"].asText().toBigDecimal(),
+                    stopLossPercent = json["stopLossPercent"].asText().toBigDecimal(),
+                    maxHoldHours = json["maxHoldHours"].asLong(),
                 )
             }
             .onErrorResume { ex ->

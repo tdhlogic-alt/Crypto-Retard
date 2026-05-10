@@ -45,6 +45,11 @@ bot:
   max-asset-allocation-percent: ${BOT_MAX_ASSET_ALLOCATION_PERCENT:35.0}
   min-profit-percent-for-ai-sell: ${BOT_MIN_PROFIT_PERCENT_FOR_AI_SELL:3.0}
   max-drawdown-from-high-percent: ${BOT_MAX_DRAWDOWN_FROM_HIGH_PERCENT:8.0}
+  min-agent-edge-score: ${BOT_MIN_AGENT_EDGE_SCORE:55}
+  strong-agent-edge-score: ${BOT_STRONG_AGENT_EDGE_SCORE:75}
+  allow-ai-sell-at-loss: ${BOT_ALLOW_AI_SELL_AT_LOSS:false}
+  ai-sell-loss-floor-percent: ${BOT_AI_SELL_LOSS_FLOOR_PERCENT:-6.0}
+  max-ai-reason-length: ${BOT_MAX_AI_REASON_LENGTH:240}
 
 openai:
   api-key: ${OPENAI_API_KEY:}

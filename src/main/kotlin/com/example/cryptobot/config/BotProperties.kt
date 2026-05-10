@@ -22,6 +22,11 @@ data class BotProperties(
     val maxAssetAllocationPercent: BigDecimal = BigDecimal("35.0"),
     val minProfitPercentForAiSell: BigDecimal = BigDecimal("3.0"),
     val maxDrawdownFromHighPercent: BigDecimal = BigDecimal("8.0"),
+    val minAgentEdgeScore: BigDecimal = BigDecimal("55"),
+    val strongAgentEdgeScore: BigDecimal = BigDecimal("75"),
+    val allowAiSellAtLoss: Boolean = false,
+    val aiSellLossFloorPercent: BigDecimal = BigDecimal("-6.0"),
+    val maxAiReasonLength: Int = 240,
 )
 
 @ConfigurationProperties(prefix = "coinbase")
