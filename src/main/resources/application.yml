@@ -41,7 +41,7 @@ bot:
   live-trading-enabled: ${BOT_LIVE_TRADING_ENABLED:false}
 
   agent-enabled: ${BOT_AGENT_ENABLED:true}
-  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.60}
+  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.50}
 
 openai:
   api-key: ${OPENAI_API_KEY:}

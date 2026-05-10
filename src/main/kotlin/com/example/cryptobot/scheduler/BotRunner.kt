@@ -69,6 +69,19 @@ class BotRunner(
                                     agentDecision.confidence,
                                     agentDecision.reason
                                 )
+                                alerts.send(
+                                    """
+                                    🤖 Agent Decision
+                                    
+                                    Product: ${agentDecision.productId}
+                                    Action: ${agentDecision.action}
+                                    Score: ${agentDecision.score}
+                                    Confidence: ${agentDecision.confidence}
+                                    
+                                    Reason:
+                                    ${agentDecision.reason}
+                                    """.trimIndent()
+                                ).subscribe()
 
                                 val validatedDecision = agentValidator.validate(agentDecision)
                                 execute(snapshot, validatedDecision)
