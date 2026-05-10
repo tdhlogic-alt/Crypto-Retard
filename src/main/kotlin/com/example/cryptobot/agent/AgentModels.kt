@@ -8,4 +8,6 @@ data class AgentTradeDecision(
     val quoteSizeUsd: BigDecimal = BigDecimal.ZERO,
     val confidence: BigDecimal = BigDecimal.ZERO,
     val reason: String = "",
+    val score: BigDecimal = BigDecimal.ZERO,
+    val baseSize: BigDecimal = BigDecimal.ZERO,
 )

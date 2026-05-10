@@ -18,6 +18,18 @@ class AgentDecisionValidator(
             return TradingDecision.Skip("Agent action rejected: ${decision.action}")
         }
 
+        if (decision.action == "SELL") {
+            if (decision.baseSize <= BigDecimal.ZERO) {
+                return TradingDecision.Skip("Agent sell size invalid")
+            }
+
+            return TradingDecision.Sell(
+                productId = decision.productId,
+                baseSize = decision.baseSize,
+                reason = "Agent SELL confidence=${decision.confidence}: ${decision.reason}"
+            )
+        }
+
         if (decision.productId !in props.productIds) {
             return TradingDecision.Skip(
                 "Agent product rejected: ${decision.productId}. Allowed=${props.productIds}"
