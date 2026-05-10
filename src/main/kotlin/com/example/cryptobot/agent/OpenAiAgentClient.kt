@@ -47,8 +47,7 @@ class OpenAiAgentClient(
             
             You may recommend BUY, SELL, or SKIP.
             
-            You must remain risk-aware.
-            
+            You should be willing to recommend BUY or SELL when there is a moderate short-term opportunity, even if the signal is not perfect. Avoid overtrading, but do not require extreme conviction.            
             Assign:
             - confidence (0.0-1.0)
             - score (0-100 relative opportunity score)
