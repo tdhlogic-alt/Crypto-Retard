@@ -9,7 +9,5 @@ import org.springframework.boot.runApplication
 class CryptoBotApplication
 
 fun main(args: Array<String>) {
-    runApplication<CryptoBotApplication>(*args) {
-        webApplicationType = org.springframework.boot.WebApplicationType.NONE
-    }
+    runApplication<CryptoBotApplication>(*args)
 }

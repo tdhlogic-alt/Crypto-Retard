@@ -67,4 +67,5 @@ jobs:
             --image "$IMAGE" \
             --region us-central1 \
             --platform managed \
+            --port 8080 \
             --quiet
