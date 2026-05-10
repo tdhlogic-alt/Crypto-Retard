@@ -63,9 +63,8 @@ jobs:
       - name: Redeploy Cloud Run
         run: |
           IMAGE=us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/ar-repo/crypto-retard:${{ github.sha }}
-
           gcloud run deploy crypto-retard \
-            --image $IMAGE \
+            --image "$IMAGE" \
             --region us-central1 \
             --platform managed \
             --quiet
