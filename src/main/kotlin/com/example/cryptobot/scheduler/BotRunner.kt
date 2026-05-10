@@ -140,8 +140,27 @@ class BotRunner(
 
                 Flux.fromIterable(props.productIds)
                     .flatMap { productId ->
+                        val now = Instant.now()
+                        val start = now.minus(24, ChronoUnit.HOURS)
+
                         coinbaseClient.getProduct(productId)
-                            .map { product ->
+                            .zipWith(
+                                coinbaseClient.getCandles(
+                                    productId = productId,
+                                    granularity = "FIFTEEN_MINUTE",
+                                    start = start,
+                                    end = now,
+                                )
+                            )
+                            .map { tuple ->
+                                val product = tuple.t1
+                                val candles = tuple.t2.candles
+                                    .sortedBy { it.start.toLongOrNull() ?: 0L }
+
+                                val closes = candles.mapNotNull { it.close.toBigDecimalOrNull() }
+                                val highs = candles.mapNotNull { it.high.toBigDecimalOrNull() }
+                                val lows = candles.mapNotNull { it.low.toBigDecimalOrNull() }
+
                                 val price = product.price.toBigDecimalOrNull() ?: BigDecimal.ZERO
                                 val baseCurrency = productId.substringBefore("-")
 
@@ -151,21 +170,42 @@ class BotRunner(
 
                                 val cryptoValueUsd = cryptoBalance.multiply(price)
 
+                                val close1hAgo = closes.getOrNull((closes.size - 5).coerceAtLeast(0)) ?: price
+                                val close4hAgo = closes.getOrNull((closes.size - 17).coerceAtLeast(0)) ?: price
+                                val close24hAgo = closes.firstOrNull() ?: price
+
+                                val candleHigh24h = highs.maxOrNull() ?: BigDecimal.ZERO
+                                val candleLow24h = lows.minOrNull() ?: BigDecimal.ZERO
+
                                 productId to MarketSnapshot(
                                     productId = productId,
                                     price = price,
                                     change24hPercent = product.pricePercentageChange24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
                                     usdAvailable = usdAvailable,
                                     volume24h = product.volume24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                                    high24h = BigDecimal.ZERO,
-                                    low24h = BigDecimal.ZERO,
-                                    priceChange24h = BigDecimal.ZERO,
-                                    priceTo24hHighPercent = BigDecimal.ZERO,
-                                    priceTo24hLowPercent = BigDecimal.ZERO,
+
+                                    high24h = candleHigh24h,
+                                    low24h = candleLow24h,
+                                    priceChange24h = price.subtract(close24hAgo),
+                                    priceTo24hHighPercent = if (candleHigh24h > BigDecimal.ZERO) {
+                                        price.divide(candleHigh24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+                                    } else BigDecimal.ZERO,
+                                    priceTo24hLowPercent = if (candleLow24h > BigDecimal.ZERO) {
+                                        price.divide(candleLow24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+                                    } else BigDecimal.ZERO,
+
                                     cryptoBalance = cryptoBalance,
                                     cryptoValueUsd = cryptoValueUsd,
                                     portfolioUsdValue = BigDecimal.ZERO,
                                     portfolioAllocationPercent = BigDecimal.ZERO,
+
+                                    trend1hPercent = pctChange(close1hAgo, price),
+                                    trend4hPercent = pctChange(close4hAgo, price),
+                                    trend24hPercent = pctChange(close24hAgo, price),
+                                    rsi14 = calculateRsi(closes),
+                                    volatility24hPercent = calculateVolatilityPercent(closes),
+                                    candleHigh24h = candleHigh24h,
+                                    candleLow24h = candleLow24h,
                                 )
                             }
                     }
@@ -393,5 +433,48 @@ class BotRunner(
                 }
             }
         }
+    }
+
+    private fun pctChange(old: BigDecimal, current: BigDecimal): BigDecimal {
+        if (old <= BigDecimal.ZERO) return BigDecimal.ZERO
+        return current.subtract(old)
+            .divide(old, 6, RoundingMode.HALF_UP)
+            .multiply(BigDecimal("100"))
+    }
+
+    private fun calculateRsi(closes: List<BigDecimal>, period: Int = 14): BigDecimal {
+        if (closes.size <= period) return BigDecimal.ZERO
+
+        val recent = closes.takeLast(period + 1)
+        var gains = BigDecimal.ZERO
+        var losses = BigDecimal.ZERO
+
+        for (i in 1 until recent.size) {
+            val diff = recent[i].subtract(recent[i - 1])
+            if (diff >= BigDecimal.ZERO) gains += diff else losses += diff.abs()
+        }
+
+        if (losses == BigDecimal.ZERO) return BigDecimal("100")
+        val rs = gains.divide(losses, 6, RoundingMode.HALF_UP)
+
+        return BigDecimal("100").subtract(
+            BigDecimal("100").divide(BigDecimal.ONE + rs, 2, RoundingMode.HALF_UP)
+        )
+    }
+
+    private fun calculateVolatilityPercent(closes: List<BigDecimal>): BigDecimal {
+        if (closes.size < 2) return BigDecimal.ZERO
+
+        val returns = closes.zipWithNext { a, b ->
+            if (a > BigDecimal.ZERO) {
+                b.subtract(a).divide(a, 8, RoundingMode.HALF_UP).toDouble()
+            } else {
+                0.0
+            }
+        }
+
+        val mean = returns.average()
+        val variance = returns.map { (it - mean) * (it - mean) }.average()
+        return BigDecimal(Math.sqrt(variance) * 100).setScale(2, RoundingMode.HALF_UP)
     }
 }

@@ -81,3 +81,18 @@ data class CreateOrderResponse(
     @JsonProperty("success_response") val successResponse: Map<String, Any>? = null,
     @JsonProperty("error_response") val errorResponse: Map<String, Any>? = null,
 )
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CandlesResponse(
+    val candles: List<Candle> = emptyList(),
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class Candle(
+    val start: String = "0",
+    val low: String = "0",
+    val high: String = "0",
+    val open: String = "0",
+    val close: String = "0",
+    val volume: String = "0",
+)
