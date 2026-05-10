@@ -42,6 +42,9 @@ bot:
 
   agent-enabled: ${BOT_AGENT_ENABLED:true}
   agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.65}
+  max-asset-allocation-percent: ${BOT_MAX_ASSET_ALLOCATION_PERCENT:35.0}
+  min-profit-percent-for-ai-sell: ${BOT_MIN_PROFIT_PERCENT_FOR_AI_SELL:3.0}
+  max-drawdown-from-high-percent: ${BOT_MAX_DRAWDOWN_FROM_HIGH_PERCENT:8.0}
 
 openai:
   api-key: ${OPENAI_API_KEY:}

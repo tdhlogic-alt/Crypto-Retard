@@ -19,6 +19,9 @@ data class BotProperties(
     val liveTradingEnabled: Boolean = false,
     val agentEnabled: Boolean = false,
     val agentMinConfidence: BigDecimal = BigDecimal("0.70"),
+    val maxAssetAllocationPercent: BigDecimal = BigDecimal("35.0"),
+    val minProfitPercentForAiSell: BigDecimal = BigDecimal("3.0"),
+    val maxDrawdownFromHighPercent: BigDecimal = BigDecimal("8.0"),
 )
 
 @ConfigurationProperties(prefix = "coinbase")

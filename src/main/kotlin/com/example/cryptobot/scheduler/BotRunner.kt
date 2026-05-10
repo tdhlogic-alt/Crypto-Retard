@@ -85,9 +85,6 @@ class BotRunner(
                                     val validatedDecision = agentValidator.validate(snapshot, agentDecision)
                                     execute(snapshot, validatedDecision)
                                 })
-
-                                val validatedDecision = agentValidator.validate(snapshot, agentDecision)
-                                execute(snapshot, validatedDecision)
                             }
                         }
                 } else {
@@ -155,7 +152,7 @@ class BotRunner(
                                     end = now,
                                 )
                             )
-                            .map { tuple ->
+                            .flatMap { tuple ->
                                 val product = tuple.t1
                                 val candles = tuple.t2.candles
                                     .sortedBy { it.start.toLongOrNull() ?: 0L }
@@ -184,39 +181,51 @@ class BotRunner(
                                 val candleHigh7d = highs.maxOrNull() ?: BigDecimal.ZERO
                                 val candleLow7d = lows.minOrNull() ?: BigDecimal.ZERO
 
-                                productId to MarketSnapshot(
-                                    productId = productId,
-                                    price = price,
-                                    change24hPercent = product.pricePercentageChange24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                                    usdAvailable = usdAvailable,
-                                    volume24h = product.volume24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                                ledger.getPosition(productId, price)
+                                    .map { position ->
+                                        productId to MarketSnapshot(
+                                            productId = productId,
+                                            price = price,
+                                            change24hPercent = product.pricePercentageChange24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                                            usdAvailable = usdAvailable,
+                                            volume24h = product.volume24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
 
-                                    high24h = candleHigh24h,
-                                    low24h = candleLow24h,
-                                    priceChange24h = price.subtract(close24hAgo),
-                                    priceTo24hHighPercent = if (candleHigh24h > BigDecimal.ZERO) {
-                                        price.divide(candleHigh24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
-                                    } else BigDecimal.ZERO,
-                                    priceTo24hLowPercent = if (candleLow24h > BigDecimal.ZERO) {
-                                        price.divide(candleLow24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
-                                    } else BigDecimal.ZERO,
+                                            high24h = candleHigh24h,
+                                            low24h = candleLow24h,
+                                            priceChange24h = price.subtract(close24hAgo),
+                                            priceTo24hHighPercent = if (candleHigh24h > BigDecimal.ZERO) {
+                                                price.divide(candleHigh24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+                                            } else BigDecimal.ZERO,
+                                            priceTo24hLowPercent = if (candleLow24h > BigDecimal.ZERO) {
+                                                price.divide(candleLow24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+                                            } else BigDecimal.ZERO,
 
-                                    cryptoBalance = cryptoBalance,
-                                    cryptoValueUsd = cryptoValueUsd,
-                                    portfolioUsdValue = BigDecimal.ZERO,
-                                    portfolioAllocationPercent = BigDecimal.ZERO,
+                                            cryptoBalance = cryptoBalance,
+                                            cryptoValueUsd = cryptoValueUsd,
+                                            portfolioUsdValue = BigDecimal.ZERO,
+                                            portfolioAllocationPercent = BigDecimal.ZERO,
 
-                                    trend1hPercent = pctChange(close1hAgo, price),
-                                    trend4hPercent = pctChange(close4hAgo, price),
-                                    trend24hPercent = pctChange(close24hAgo, price),
-                                    rsi14 = calculateRsi(closes),
-                                    volatility24hPercent = calculateVolatilityPercent(closes),
-                                    candleHigh24h = candleHigh24h,
-                                    candleLow24h = candleLow24h,
-                                    trend7dPercent = pctChange(close7dAgo, price),
-                                    candleHigh7d = candleHigh7d,
-                                    candleLow7d = candleLow7d,
-                                )
+                                            trend1hPercent = pctChange(close1hAgo, price),
+                                            trend4hPercent = pctChange(close4hAgo, price),
+                                            trend24hPercent = pctChange(close24hAgo, price),
+                                            rsi14 = calculateRsi(closes),
+                                            volatility24hPercent = calculateVolatilityPercent(closes),
+                                            candleHigh24h = candleHigh24h,
+                                            candleLow24h = candleLow24h,
+                                            trend7dPercent = pctChange(close7dAgo, price),
+                                            candleHigh7d = candleHigh7d,
+                                            candleLow7d = candleLow7d,
+                                            avgCostBasis = position.avgCostBasis,
+                                            totalInvested = position.totalInvested,
+                                            realizedPnlUsd = position.realizedPnlUsd,
+                                            unrealizedPnlUsd = position.unrealizedPnlUsd,
+                                            unrealizedPnlPercent = position.unrealizedPnlPercent,
+                                            highestPriceSeen = position.highestPriceSeen,
+                                            drawdownFromHighPercent = position.drawdownFromHighPercent,
+                                            buyCount = position.buyCount,
+                                            sellCount = position.sellCount,
+                                        )
+                                    }
                             }
                     }
                     .collectList()
@@ -365,6 +374,8 @@ class BotRunner(
                                                         quoteSizeUsd = decision.quoteSizeUsd,
                                                         coinbaseSuccess = response.success,
                                                         errorMessage = response.errorResponse?.toString(),
+                                                    ).then(
+                                                        if (response.success) ledger.applyLiveBuy(snapshot, decision.quoteSizeUsd) else Mono.empty()
                                                     )
                                                 }
                                                 .thenReturn(Unit)
@@ -437,6 +448,8 @@ class BotRunner(
                                 baseSize = decision.baseSize,
                                 coinbaseSuccess = response.success,
                                 errorMessage = response.errorResponse?.toString(),
+                            ).then(
+                                if (response.success) ledger.applyLiveSell(snapshot, decision.baseSize) else Mono.empty()
                             )
                         }
                         .thenReturn(Unit)
