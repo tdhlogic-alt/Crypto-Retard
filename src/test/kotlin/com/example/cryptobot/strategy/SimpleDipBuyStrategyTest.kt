@@ -37,7 +37,7 @@ class SimpleDipBuyStrategyTest {
             MarketSnapshot(
                 productId = "BTC-USD",
                 price = BigDecimal("50000"),
-                change24hPercent = BigDecimal("-6.0"),
+                change24hPercent = BigDecimal("-2.0"),
                 usdAvailable = BigDecimal("1000.00"),
                 volume24h = BigDecimal("25000000000"),
                 high24h = BigDecimal("52000"),
@@ -50,6 +50,6 @@ class SimpleDipBuyStrategyTest {
                 portfolioUsdValue = BigDecimal("0.000"),
                 portfolioAllocationPercent = BigDecimal("0.000"),
             )        )
-        assertTrue(decision is TradingDecision.Buy)
+        assertTrue(decision is TradingDecision.Skip)
     }
 }

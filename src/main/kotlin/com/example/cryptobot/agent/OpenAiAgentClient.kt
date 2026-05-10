@@ -75,6 +75,9 @@ class OpenAiAgentClient(
             volatility24hPercent=${snapshot.volatility24hPercent}
             candleHigh24h=${snapshot.candleHigh24h}
             candleLow24h=${snapshot.candleLow24h}
+            trend7dPercent=${snapshot.trend7dPercent}
+            candleHigh7d=${snapshot.candleHigh7d}
+            candleLow7d=${snapshot.candleLow7d}
             
             Use portfolio awareness:
             - Avoid buying more of an asset that already has a large allocation.

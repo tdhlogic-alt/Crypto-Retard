@@ -24,6 +24,9 @@ data class MarketSnapshot(
     val volatility24hPercent: BigDecimal = BigDecimal.ZERO,
     val candleHigh24h: BigDecimal = BigDecimal.ZERO,
     val candleLow24h: BigDecimal = BigDecimal.ZERO,
+    val trend7dPercent: BigDecimal = BigDecimal.ZERO,
+    val candleHigh7d: BigDecimal = BigDecimal.ZERO,
+    val candleLow7d: BigDecimal = BigDecimal.ZERO,
 )
 
 sealed interface TradingDecision {

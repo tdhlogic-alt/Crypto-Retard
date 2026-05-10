@@ -81,7 +81,10 @@ class BotRunner(
                                     Reason:
                                     ${agentDecision.reason}
                                     """.trimIndent()
-                                ).subscribe()
+                                ).then(Mono.defer {
+                                    val validatedDecision = agentValidator.validate(snapshot, agentDecision)
+                                    execute(snapshot, validatedDecision)
+                                })
 
                                 val validatedDecision = agentValidator.validate(snapshot, agentDecision)
                                 execute(snapshot, validatedDecision)
@@ -141,13 +144,13 @@ class BotRunner(
                 Flux.fromIterable(props.productIds)
                     .flatMap { productId ->
                         val now = Instant.now()
-                        val start = now.minus(24, ChronoUnit.HOURS)
+                        val start = now.minus(7, ChronoUnit.DAYS)
 
                         coinbaseClient.getProduct(productId)
                             .zipWith(
                                 coinbaseClient.getCandles(
                                     productId = productId,
-                                    granularity = "FIFTEEN_MINUTE",
+                                    granularity = "ONE_HOUR",
                                     start = start,
                                     end = now,
                                 )
@@ -170,12 +173,16 @@ class BotRunner(
 
                                 val cryptoValueUsd = cryptoBalance.multiply(price)
 
-                                val close1hAgo = closes.getOrNull((closes.size - 5).coerceAtLeast(0)) ?: price
-                                val close4hAgo = closes.getOrNull((closes.size - 17).coerceAtLeast(0)) ?: price
-                                val close24hAgo = closes.firstOrNull() ?: price
+                                val close1hAgo = closes.getOrNull((closes.size - 2).coerceAtLeast(0)) ?: price
+                                val close4hAgo = closes.getOrNull((closes.size - 5).coerceAtLeast(0)) ?: price
+                                val close24hAgo = closes.getOrNull((closes.size - 25).coerceAtLeast(0)) ?: closes.firstOrNull() ?: price
+                                val close7dAgo = closes.firstOrNull() ?: price
 
                                 val candleHigh24h = highs.maxOrNull() ?: BigDecimal.ZERO
                                 val candleLow24h = lows.minOrNull() ?: BigDecimal.ZERO
+
+                                val candleHigh7d = highs.maxOrNull() ?: BigDecimal.ZERO
+                                val candleLow7d = lows.minOrNull() ?: BigDecimal.ZERO
 
                                 productId to MarketSnapshot(
                                     productId = productId,
@@ -206,6 +213,9 @@ class BotRunner(
                                     volatility24hPercent = calculateVolatilityPercent(closes),
                                     candleHigh24h = candleHigh24h,
                                     candleLow24h = candleLow24h,
+                                    trend7dPercent = pctChange(close7dAgo, price),
+                                    candleHigh7d = candleHigh7d,
+                                    candleLow7d = candleLow7d,
                                 )
                             }
                     }
