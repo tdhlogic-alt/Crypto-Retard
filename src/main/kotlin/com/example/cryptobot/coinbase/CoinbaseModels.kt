@@ -7,9 +7,16 @@ import java.util.UUID
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class ProductResponse(
-    @JsonProperty("product_id") val productId: String = "",
+    @JsonProperty("product_id")
+    val productId: String? = null,
+
     val price: String = "0",
-    @JsonProperty("price_percentage_change_24h") val pricePercentageChange24h: String? = null,
+
+    @JsonProperty("price_percentage_change_24h")
+    val pricePercentageChange24h: String? = null,
+
+    @JsonProperty("volume_24h")
+    val volume24h: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -45,7 +52,15 @@ data class CreateOrderRequest(
             productId = productId,
             side = "BUY",
             orderConfiguration = OrderConfiguration(
-                marketMarketIoc = MarketMarketIoc(quoteSize = quoteSizeUsd.toPlainString())
+                marketMarketIoc = MarketMarketIoc(quoteSize = quoteSizeUsd.toPlainString())            )
+        )
+
+        fun marketSell(productId: String, baseSize: BigDecimal) = CreateOrderRequest(
+            clientOrderId = UUID.randomUUID().toString(),
+            productId = productId,
+            side = "SELL",
+            orderConfiguration = OrderConfiguration(
+                marketMarketIoc = MarketMarketIoc(baseSize = baseSize.toPlainString())
             )
         )
     }
@@ -56,7 +71,8 @@ data class OrderConfiguration(
 )
 
 data class MarketMarketIoc(
-    @JsonProperty("quote_size") val quoteSize: String,
+    @JsonProperty("quote_size") val quoteSize: String? = null,
+    @JsonProperty("base_size") val baseSize: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)

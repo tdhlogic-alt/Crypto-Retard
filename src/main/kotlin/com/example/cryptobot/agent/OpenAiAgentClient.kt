@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToMono
 import reactor.core.publisher.Mono
+import java.math.BigDecimal
 
 @Component
 class OpenAiAgentClient(
@@ -31,23 +32,39 @@ class OpenAiAgentClient(
         }
 
         val prompt = """
-            You are a conservative crypto trading decision engine.
+            You are an AI crypto swing trading agent.
             
-            You may only recommend BUY or SKIP.
-            You may only trade ${botProps.productIds}.
-            Do not recommend sells.
-            Do not recommend leverage.
-            Do not recommend more than ${botProps.maxBuyQuoteSizeUsd} USD.
+            Your job is to evaluate whether this asset is an attractive short-term trading opportunity relative to other crypto assets.
+            
+            Consider:
+            - 24h momentum
+            - volatility
+            - proximity to highs/lows
+            - volume
+            - dip-buy opportunities
+            - trend continuation potential
+            - risk/reward
+            
+            You may recommend BUY, SELL, or SKIP.
+            
+            You must remain risk-aware.
+            
+            Assign:
+            - confidence (0.0-1.0)
+            - score (0-100 relative opportunity score)
+            
+            Prefer higher scores only for the strongest opportunities.
             
             Market snapshot:
             productId=${snapshot.productId}
             price=${snapshot.price}
             change24hPercent=${snapshot.change24hPercent}
             usdAvailable=${snapshot.usdAvailable}
+            cryptoBalance=${snapshot.cryptoBalance}
             
             Existing configured buy size: ${botProps.buyQuoteSizeUsd}
             
-            Return a conservative decision.
+            Prefer BUY over SKIP when momentum or dip conditions appear favorable, but remain risk-aware.
         """.trimIndent()
 
         val request = mapOf(
@@ -62,16 +79,26 @@ class OpenAiAgentClient(
                         "type" to "object",
                         "additionalProperties" to false,
                         "properties" to mapOf(
-                            "action" to mapOf("type" to "string", "enum" to listOf("BUY", "SKIP")),
+                            "action" to mapOf("type" to "string", "enum" to listOf("BUY", "SELL", "SKIP")),
                             "productId" to mapOf("type" to "string"),
                             "quoteSizeUsd" to mapOf("type" to "string"),
                             "confidence" to mapOf("type" to "number"),
-                            "reason" to mapOf("type" to "string")
+                            "reason" to mapOf("type" to "string"),
+                            "score" to mapOf("type" to "number"),
+                            "baseSize" to mapOf("type" to "string"),
                         ),
-                        "required" to listOf("action", "productId", "quoteSizeUsd", "confidence", "reason")
+                        "required" to listOf(
+                            "action",
+                            "productId",
+                            "quoteSizeUsd",
+                            "baseSize",
+                            "confidence",
+                            "reason",
+                            "score"
+                        )
                     )
                 )
-            )
+            ),
         )
 
         return webClient.post()
@@ -102,6 +129,8 @@ class OpenAiAgentClient(
                     quoteSizeUsd = json["quoteSizeUsd"].asText().toBigDecimal(),
                     confidence = json["confidence"].decimalValue(),
                     reason = json["reason"].asText(),
+                    score = BigDecimal(json["score"].asText()),
+                    baseSize = json["baseSize"].decimalValue(),
                 )
             }
             .onErrorResume { ex ->

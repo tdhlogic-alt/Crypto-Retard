@@ -10,8 +10,19 @@ class SimpleDipBuyStrategyTest {
     fun `buys when dip threshold is crossed and cash reserve is safe`() {
         val strategy = SimpleDipBuyStrategy(BotProperties())
         val decision = strategy.decide(
-            MarketSnapshot("BTC-USD", BigDecimal("50000"), BigDecimal("-6.0"), BigDecimal("1000.00"))
-        )
+            MarketSnapshot(
+                productId = "BTC-USD",
+                price = BigDecimal("50000"),
+                change24hPercent = BigDecimal("-6.0"),
+                usdAvailable = BigDecimal("1000.00"),
+                volume24h = BigDecimal("25000000000"),
+                high24h = BigDecimal("52000"),
+                low24h = BigDecimal("48000"),
+                priceChange24h = BigDecimal("-3200"),
+                priceTo24hHighPercent = BigDecimal("96.15"),
+                priceTo24hLowPercent = BigDecimal("104.16"),
+                cryptoBalance = BigDecimal("0.25")
+            )        )
         assertTrue(decision is TradingDecision.Buy)
     }
 
@@ -19,8 +30,19 @@ class SimpleDipBuyStrategyTest {
     fun `skips when dip is not large enough`() {
         val strategy = SimpleDipBuyStrategy(BotProperties())
         val decision = strategy.decide(
-            MarketSnapshot("BTC-USD", BigDecimal("50000"), BigDecimal("-2.0"), BigDecimal("1000.00"))
-        )
-        assertTrue(decision is TradingDecision.Skip)
+            MarketSnapshot(
+                productId = "BTC-USD",
+                price = BigDecimal("50000"),
+                change24hPercent = BigDecimal("-6.0"),
+                usdAvailable = BigDecimal("1000.00"),
+                volume24h = BigDecimal("25000000000"),
+                high24h = BigDecimal("52000"),
+                low24h = BigDecimal("48000"),
+                priceChange24h = BigDecimal("-3200"),
+                priceTo24hHighPercent = BigDecimal("96.15"),
+                priceTo24hLowPercent = BigDecimal("104.16"),
+                cryptoBalance = BigDecimal("0.25")
+            )        )
+        assertTrue(decision is TradingDecision.Buy)
     }
 }
