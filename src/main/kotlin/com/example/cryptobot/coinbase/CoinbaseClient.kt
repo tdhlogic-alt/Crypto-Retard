@@ -12,6 +12,7 @@ import reactor.core.publisher.Mono
 import reactor.netty.http.client.HttpClient
 import java.math.BigDecimal
 import java.time.Duration
+import java.time.Instant
 
 @Component
 class CoinbaseClient(
@@ -116,5 +117,35 @@ class CoinbaseClient(
             }
             .bodyToMono(CreateOrderResponse::class.java)
             .doOnSubscribe { log.warn("Submitting Coinbase market sell: product={} baseSize={}", productId, baseSize) }
+    }
+
+    fun getCandles(
+        productId: String,
+        granularity: String,
+        start: Instant,
+        end: Instant,
+    ): Mono<CandlesResponse> {
+        val path = "/api/v3/brokerage/products/$productId/candles"
+
+        return webClient.get()
+            .uri { builder ->
+                builder
+                    .path(path)
+                    .queryParam("granularity", granularity)
+                    .queryParam("start", start.epochSecond)
+                    .queryParam("end", end.epochSecond)
+                    .build()
+            }
+            .headers { it.setBearerAuth(signer.sign("GET", path)) }
+            .retrieve()
+            .onStatus(HttpStatusCode::isError) { response ->
+                response.bodyToMono(String::class.java)
+                    .defaultIfEmpty("")
+                    .flatMap { body ->
+                        Mono.error(RuntimeException("Coinbase getCandles failed: status=${response.statusCode()} body=$body"))
+                    }
+            }
+            .bodyToMono(CandlesResponse::class.java)
+            .doOnSubscribe { log.info("Fetching Coinbase candles product={} granularity={}", productId, granularity) }
     }
 }

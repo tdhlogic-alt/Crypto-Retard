@@ -44,6 +44,11 @@ class OpenAiAgentClient(
             - dip-buy opportunities
             - trend continuation potential
             - risk/reward
+            - 1h, 4h, and 24h trend direction
+            - RSI14 overbought/oversold state
+            - 24h volatility
+            - proximity to 24h candle high/low
+            - volume and momentum confirmation
             
             You may recommend BUY, SELL, or SKIP.
             
@@ -63,6 +68,13 @@ class OpenAiAgentClient(
             cryptoValueUsd=${snapshot.cryptoValueUsd}
             portfolioUsdValue=${snapshot.portfolioUsdValue}
             portfolioAllocationPercent=${snapshot.portfolioAllocationPercent}
+            trend1hPercent=${snapshot.trend1hPercent}
+            trend4hPercent=${snapshot.trend4hPercent}
+            trend24hPercent=${snapshot.trend24hPercent}
+            rsi14=${snapshot.rsi14}
+            volatility24hPercent=${snapshot.volatility24hPercent}
+            candleHigh24h=${snapshot.candleHigh24h}
+            candleLow24h=${snapshot.candleLow24h}
             
             Use portfolio awareness:
             - Avoid buying more of an asset that already has a large allocation.
@@ -138,7 +150,7 @@ class OpenAiAgentClient(
                     confidence = json["confidence"].decimalValue(),
                     reason = json["reason"].asText(),
                     score = BigDecimal(json["score"].asText()),
-                    baseSize = json["baseSize"].decimalValue(),
+                    baseSize = json["baseSize"].asText().toBigDecimal(),
                 )
             }
             .onErrorResume { ex ->

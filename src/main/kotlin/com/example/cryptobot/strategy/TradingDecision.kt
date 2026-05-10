@@ -17,6 +17,13 @@ data class MarketSnapshot(
     val cryptoValueUsd: BigDecimal,
     val portfolioUsdValue: BigDecimal,
     val portfolioAllocationPercent: BigDecimal,
+    val trend1hPercent: BigDecimal = BigDecimal.ZERO,
+    val trend4hPercent: BigDecimal = BigDecimal.ZERO,
+    val trend24hPercent: BigDecimal = BigDecimal.ZERO,
+    val rsi14: BigDecimal = BigDecimal.ZERO,
+    val volatility24hPercent: BigDecimal = BigDecimal.ZERO,
+    val candleHigh24h: BigDecimal = BigDecimal.ZERO,
+    val candleLow24h: BigDecimal = BigDecimal.ZERO,
 )
 
 sealed interface TradingDecision {
