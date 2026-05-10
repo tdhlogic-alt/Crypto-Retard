@@ -29,19 +29,19 @@ bot:
     - ADA-USD
     - XRP-USD
 
-  buy-quote-size-usd: "25.00"
+  buy-quote-size-usd: "10.00"
   min-usd-cash-reserve: "500.00"
-  max-single-buy-usd: "25.00"
-  max-daily-buy-usd: "50.00"
+  max-single-buy-usd: "10.00"
+  max-daily-buy-usd: "100.00"
   dip-threshold-percent: "5.0"
 
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
-  max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:25.00}
+  max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:10.00}
   live-trading-enabled: ${BOT_LIVE_TRADING_ENABLED:false}
 
   agent-enabled: ${BOT_AGENT_ENABLED:true}
-  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.50}
+  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.65}
 
 openai:
   api-key: ${OPENAI_API_KEY:}
