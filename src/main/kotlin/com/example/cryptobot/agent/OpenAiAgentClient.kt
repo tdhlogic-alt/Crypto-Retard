@@ -68,6 +68,15 @@ class OpenAiAgentClient(
             cryptoValueUsd=${snapshot.cryptoValueUsd}
             portfolioUsdValue=${snapshot.portfolioUsdValue}
             portfolioAllocationPercent=${snapshot.portfolioAllocationPercent}
+            avgCostBasis=${snapshot.avgCostBasis}
+            totalInvested=${snapshot.totalInvested}
+            realizedPnlUsd=${snapshot.realizedPnlUsd}
+            unrealizedPnlUsd=${snapshot.unrealizedPnlUsd}
+            unrealizedPnlPercent=${snapshot.unrealizedPnlPercent}
+            highestPriceSeen=${snapshot.highestPriceSeen}
+            drawdownFromHighPercent=${snapshot.drawdownFromHighPercent}
+            buyCount=${snapshot.buyCount}
+            sellCount=${snapshot.sellCount}
             trend1hPercent=${snapshot.trend1hPercent}
             trend4hPercent=${snapshot.trend4hPercent}
             trend24hPercent=${snapshot.trend24hPercent}
@@ -79,15 +88,22 @@ class OpenAiAgentClient(
             candleHigh7d=${snapshot.candleHigh7d}
             candleLow7d=${snapshot.candleLow7d}
             
-            Use portfolio awareness:
+            Use portfolio and position awareness:
             - Avoid buying more of an asset that already has a large allocation.
+            - Avoid repeated averaging down unless the setup is strong and risk/reward improved.
+            - Consider BUY more favorably when current price is below avgCostBasis but trend/RSI/volume suggest recovery.
             - Consider SELL only if cryptoBalance > 0.
             - Do not recommend SELL for assets with zero balance.
+            - Consider partial SELL when unrealizedPnlPercent is meaningfully positive and momentum is weakening.
+            - Consider SELL when drawdownFromHighPercent is large after a profitable move, as a trailing-stop style exit.
+            - Avoid SELL solely because price is below avgCostBasis unless the thesis is invalidated or downside momentum is severe.
             - Prefer diversifying across allowed assets when opportunity quality is similar.
             
             Existing configured buy size: ${botProps.buyQuoteSizeUsd}
+            Max buy size allowed: ${botProps.maxBuyQuoteSizeUsd}
             
             Prefer BUY over SKIP when momentum or dip conditions appear favorable, but remain risk-aware.
+            For SELL, prefer partial exits; baseSize should usually be 25%-50% of cryptoBalance unless risk is extreme.
         """.trimIndent()
 
         val request = mapOf(

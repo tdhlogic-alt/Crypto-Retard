@@ -27,6 +27,15 @@ data class MarketSnapshot(
     val trend7dPercent: BigDecimal = BigDecimal.ZERO,
     val candleHigh7d: BigDecimal = BigDecimal.ZERO,
     val candleLow7d: BigDecimal = BigDecimal.ZERO,
+    val avgCostBasis: BigDecimal = BigDecimal.ZERO,
+    val totalInvested: BigDecimal = BigDecimal.ZERO,
+    val realizedPnlUsd: BigDecimal = BigDecimal.ZERO,
+    val unrealizedPnlUsd: BigDecimal = BigDecimal.ZERO,
+    val unrealizedPnlPercent: BigDecimal = BigDecimal.ZERO,
+    val highestPriceSeen: BigDecimal = BigDecimal.ZERO,
+    val drawdownFromHighPercent: BigDecimal = BigDecimal.ZERO,
+    val buyCount: Long = 0,
+    val sellCount: Long = 0,
 )
 
 sealed interface TradingDecision {
