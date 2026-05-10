@@ -60,6 +60,15 @@ class OpenAiAgentClient(
             change24hPercent=${snapshot.change24hPercent}
             usdAvailable=${snapshot.usdAvailable}
             cryptoBalance=${snapshot.cryptoBalance}
+            cryptoValueUsd=${snapshot.cryptoValueUsd}
+            portfolioUsdValue=${snapshot.portfolioUsdValue}
+            portfolioAllocationPercent=${snapshot.portfolioAllocationPercent}
+            
+            Use portfolio awareness:
+            - Avoid buying more of an asset that already has a large allocation.
+            - Consider SELL only if cryptoBalance > 0.
+            - Do not recommend SELL for assets with zero balance.
+            - Prefer diversifying across allowed assets when opportunity quality is similar.
             
             Existing configured buy size: ${botProps.buyQuoteSizeUsd}
             

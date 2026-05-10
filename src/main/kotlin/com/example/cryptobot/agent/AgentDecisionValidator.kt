@@ -1,6 +1,7 @@
 package com.example.cryptobot.agent
 
 import com.example.cryptobot.config.BotProperties
+import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.TradingDecision
 import org.springframework.stereotype.Component
 import java.math.BigDecimal
@@ -9,7 +10,7 @@ import java.math.BigDecimal
 class AgentDecisionValidator(
     private val props: BotProperties,
 ) {
-    fun validate(decision: AgentTradeDecision): TradingDecision {
+    fun validate(snapshot: MarketSnapshot, decision: AgentTradeDecision): TradingDecision {
         if (decision.action == "SKIP") {
             return TradingDecision.Skip("Agent skipped: ${decision.reason}")
         }
@@ -38,6 +39,11 @@ class AgentDecisionValidator(
             }
 
             "SELL" -> {
+                if (decision.baseSize > snapshot.cryptoBalance) {
+                    return TradingDecision.Skip(
+                        "Agent sell size exceeds available balance: ${decision.baseSize} > ${snapshot.cryptoBalance}"
+                    )
+                }
                 if (decision.baseSize <= BigDecimal.ZERO) {
                     TradingDecision.Skip("Agent sell size invalid: ${decision.baseSize}")
                 } else {
