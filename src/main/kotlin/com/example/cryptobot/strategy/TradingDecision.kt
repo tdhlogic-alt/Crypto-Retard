@@ -14,6 +14,9 @@ data class MarketSnapshot(
     val priceTo24hHighPercent: BigDecimal,
     val priceTo24hLowPercent: BigDecimal,
     val cryptoBalance: BigDecimal,
+    val cryptoValueUsd: BigDecimal,
+    val portfolioUsdValue: BigDecimal,
+    val portfolioAllocationPercent: BigDecimal,
 )
 
 sealed interface TradingDecision {

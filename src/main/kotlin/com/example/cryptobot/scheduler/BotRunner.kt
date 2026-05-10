@@ -83,7 +83,7 @@ class BotRunner(
                                     """.trimIndent()
                                 ).subscribe()
 
-                                val validatedDecision = agentValidator.validate(agentDecision)
+                                val validatedDecision = agentValidator.validate(snapshot, agentDecision)
                                 execute(snapshot, validatedDecision)
                             }
                         }
@@ -131,8 +131,9 @@ class BotRunner(
         log.info("Building market snapshots for {}", props.productIds)
 
         return coinbaseClient.listAccounts()
-            .flatMapMany { accountsResponse ->
+            .flatMap { accountsResponse ->
                 val accounts = accountsResponse.accounts
+
                 val usdAvailable = accounts
                     .filter { it.currency == "USD" }
                     .sumOf { it.availableBalance.decimal() }
@@ -142,14 +143,15 @@ class BotRunner(
                         coinbaseClient.getProduct(productId)
                             .map { product ->
                                 val price = product.price.toBigDecimalOrNull() ?: BigDecimal.ZERO
-
                                 val baseCurrency = productId.substringBefore("-")
 
                                 val cryptoBalance = accounts
                                     .filter { it.currency == baseCurrency }
                                     .sumOf { it.availableBalance.decimal() }
 
-                                MarketSnapshot(
+                                val cryptoValueUsd = cryptoBalance.multiply(price)
+
+                                productId to MarketSnapshot(
                                     productId = productId,
                                     price = price,
                                     change24hPercent = product.pricePercentageChange24h?.toBigDecimalOrNull() ?: BigDecimal.ZERO,
@@ -161,23 +163,38 @@ class BotRunner(
                                     priceTo24hHighPercent = BigDecimal.ZERO,
                                     priceTo24hLowPercent = BigDecimal.ZERO,
                                     cryptoBalance = cryptoBalance,
-                                )
-                            }
-                            .doOnSuccess {
-                                log.info(
-                                    "Market snapshot built: product={} price={} change24h={} volume24h={} high24h={} low24h={} usdAvailable={}",
-                                    it.productId,
-                                    it.price,
-                                    it.change24hPercent,
-                                    it.volume24h,
-                                    it.high24h,
-                                    it.low24h,
-                                    it.usdAvailable
+                                    cryptoValueUsd = cryptoValueUsd,
+                                    portfolioUsdValue = BigDecimal.ZERO,
+                                    portfolioAllocationPercent = BigDecimal.ZERO,
                                 )
                             }
                     }
+                    .collectList()
+                    .map { pairs ->
+                        val snapshots = pairs.map { it.second }
+
+                        val cryptoPortfolioValue = snapshots
+                            .sumOf { it.cryptoValueUsd }
+
+                        val totalPortfolioValue = usdAvailable + cryptoPortfolioValue
+
+                        snapshots.map { snapshot ->
+                            val allocationPercent =
+                                if (totalPortfolioValue > BigDecimal.ZERO) {
+                                    snapshot.cryptoValueUsd
+                                        .divide(totalPortfolioValue, 4, RoundingMode.HALF_UP)
+                                        .multiply(BigDecimal("100"))
+                                } else {
+                                    BigDecimal.ZERO
+                                }
+
+                            snapshot.copy(
+                                portfolioUsdValue = totalPortfolioValue,
+                                portfolioAllocationPercent = allocationPercent,
+                            )
+                        }
+                    }
             }
-            .collectList()
     }
 
     private fun execute(snapshot: MarketSnapshot, decision: TradingDecision): Mono<Unit> = when (decision) {
