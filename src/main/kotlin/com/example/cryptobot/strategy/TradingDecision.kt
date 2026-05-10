@@ -36,6 +36,14 @@ data class MarketSnapshot(
     val drawdownFromHighPercent: BigDecimal = BigDecimal.ZERO,
     val buyCount: Long = 0,
     val sellCount: Long = 0,
+    val marketRegime: String = "UNKNOWN",
+    val reasonCode30dWinRate: BigDecimal = BigDecimal.ZERO,
+    val reasonCode30dCount: Long = 0,
+    val activeThesis: String = "",
+    val activeInvalidationCondition: String = "",
+    val activeProfitTargetPercent: BigDecimal = BigDecimal.ZERO,
+    val activeStopLossPercent: BigDecimal = BigDecimal.ZERO,
+    val activeMaxHoldHours: Long = 0,
 )
 
 sealed interface TradingDecision {
@@ -44,12 +52,19 @@ sealed interface TradingDecision {
         val productId: String,
         val quoteSizeUsd: BigDecimal,
         val reason: String,
+        val reasonCode: String = "NO_CLEAR_EDGE",
+        val thesis: String = "",
+        val invalidationCondition: String = "",
+        val profitTargetPercent: BigDecimal = BigDecimal.ZERO,
+        val stopLossPercent: BigDecimal = BigDecimal.ZERO,
+        val maxHoldHours: Long = 0,
     ) : TradingDecision
 
     data class Sell(
         val productId: String,
         val baseSize: BigDecimal,
         val reason: String,
+        val reasonCode: String = "NO_CLEAR_EDGE",
     ) : TradingDecision
 
     data class Skip(

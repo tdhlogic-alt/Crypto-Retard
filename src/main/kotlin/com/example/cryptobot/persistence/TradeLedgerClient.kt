@@ -31,6 +31,12 @@ class TradeLedgerClient(
         coinbaseSuccess: Boolean? = null,
         errorMessage: String? = null,
         baseSize: BigDecimal? = null,
+        reasonCode: String? = null,
+        thesis: String? = null,
+        invalidationCondition: String? = null,
+        profitTargetPercent: BigDecimal? = null,
+        stopLossPercent: BigDecimal? = null,
+        maxHoldHours: Long? = null,
     ): Mono<Void> {
         return Mono.fromCallable {
             val doc = mapOf(
@@ -52,6 +58,14 @@ class TradeLedgerClient(
                 "unrealizedPnlPercent" to snapshot.unrealizedPnlPercent.toPlainString(),
                 "highestPriceSeen" to snapshot.highestPriceSeen.toPlainString(),
                 "drawdownFromHighPercent" to snapshot.drawdownFromHighPercent.toPlainString(),
+                "marketRegime" to snapshot.marketRegime,
+                "reasonCode" to reasonCode,
+                "thesis" to thesis,
+                "invalidationCondition" to invalidationCondition,
+                "profitTargetPercent" to profitTargetPercent?.toPlainString(),
+                "stopLossPercent" to stopLossPercent?.toPlainString(),
+                "maxHoldHours" to maxHoldHours,
+                "outcomeScored" to (decisionType != "BUY" && decisionType != "SELL"),
             )
 
             decisions.add(doc).get()
@@ -75,6 +89,12 @@ class TradeLedgerClient(
             val highestPriceSeen = maxOf(highestPriceSeenStored, currentPrice)
             val buyCount = doc.getLong("buyCount") ?: 0L
             val sellCount = doc.getLong("sellCount") ?: 0L
+            val activeReasonCode = doc.getString("activeReasonCode") ?: "NO_CLEAR_EDGE"
+            val activeThesis = doc.getString("activeThesis") ?: ""
+            val activeInvalidationCondition = doc.getString("activeInvalidationCondition") ?: ""
+            val activeProfitTargetPercent = doc.getString("activeProfitTargetPercent")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+            val activeStopLossPercent = doc.getString("activeStopLossPercent")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+            val activeMaxHoldHours = doc.getLong("activeMaxHoldHours") ?: 0L
 
             val marketValue = quantity.multiply(currentPrice)
             val costValue = quantity.multiply(avgCostBasis)
@@ -101,6 +121,12 @@ class TradeLedgerClient(
                 drawdownFromHighPercent = drawdownFromHighPercent,
                 buyCount = buyCount,
                 sellCount = sellCount,
+                activeReasonCode = activeReasonCode,
+                activeThesis = activeThesis,
+                activeInvalidationCondition = activeInvalidationCondition,
+                activeProfitTargetPercent = activeProfitTargetPercent,
+                activeStopLossPercent = activeStopLossPercent,
+                activeMaxHoldHours = activeMaxHoldHours,
             )
         }.subscribeOn(Schedulers.boundedElastic())
     }
@@ -123,7 +149,16 @@ class TradeLedgerClient(
             }
     }
 
-    fun applyLiveBuy(snapshot: MarketSnapshot, quoteSizeUsd: BigDecimal): Mono<Void> {
+    fun applyLiveBuy(
+        snapshot: MarketSnapshot,
+        quoteSizeUsd: BigDecimal,
+        reasonCode: String,
+        thesis: String,
+        invalidationCondition: String,
+        profitTargetPercent: BigDecimal,
+        stopLossPercent: BigDecimal,
+        maxHoldHours: Long,
+    ): Mono<Void> {
         return Mono.fromCallable {
             firestore.runTransaction { tx ->
                 val ref = positions.document(snapshot.productId)
@@ -155,6 +190,12 @@ class TradeLedgerClient(
                         "totalInvested" to newTotalInvested.toPlainString(),
                         "realizedPnlUsd" to oldRealizedPnl.toPlainString(),
                         "highestPriceSeen" to maxOf(oldHighestPriceSeen, snapshot.price).toPlainString(),
+                        "activeReasonCode" to reasonCode,
+                        "activeThesis" to thesis,
+                        "activeInvalidationCondition" to invalidationCondition,
+                        "activeProfitTargetPercent" to profitTargetPercent.toPlainString(),
+                        "activeStopLossPercent" to stopLossPercent.toPlainString(),
+                        "activeMaxHoldHours" to maxHoldHours,
                         "buyCount" to oldBuyCount + 1,
                         "sellCount" to oldSellCount,
                         "lastBuyAt" to Timestamp.now(),
@@ -168,7 +209,7 @@ class TradeLedgerClient(
         }.subscribeOn(Schedulers.boundedElastic()).then()
     }
 
-    fun applyLiveSell(snapshot: MarketSnapshot, baseSize: BigDecimal): Mono<Void> {
+    fun applyLiveSell(snapshot: MarketSnapshot, baseSize: BigDecimal, reasonCode: String): Mono<Void> {
         return Mono.fromCallable {
             firestore.runTransaction { tx ->
                 val ref = positions.document(snapshot.productId)
@@ -199,10 +240,22 @@ class TradeLedgerClient(
                         "avgCostBasis" to newAvgCostBasis.toPlainString(),
                         "totalInvested" to newTotalInvested.toPlainString(),
                         "realizedPnlUsd" to oldRealizedPnl.add(realizedPnl).toPlainString(),
+                        "lastSellReasonCode" to reasonCode,
                         "buyCount" to oldBuyCount,
                         "sellCount" to oldSellCount + 1,
                         "lastSellAt" to Timestamp.now(),
                         "updatedAt" to Timestamp.now(),
+                    ).plus(
+                        if (newQuantity <= BigDecimal.ZERO) {
+                            mapOf(
+                                "activeReasonCode" to "NO_CLEAR_EDGE",
+                                "activeThesis" to "",
+                                "activeInvalidationCondition" to "",
+                                "activeProfitTargetPercent" to BigDecimal.ZERO.toPlainString(),
+                                "activeStopLossPercent" to BigDecimal.ZERO.toPlainString(),
+                                "activeMaxHoldHours" to 0L,
+                            )
+                        } else emptyMap()
                     ),
                     com.google.cloud.firestore.SetOptions.merge(),
                 )
@@ -210,6 +263,79 @@ class TradeLedgerClient(
             }.get()
             null
         }.subscribeOn(Schedulers.boundedElastic()).then()
+    }
+
+
+
+    fun scorePendingOutcomes(productId: String, currentPrice: BigDecimal): Mono<Void> {
+        if (currentPrice <= BigDecimal.ZERO) return Mono.empty()
+
+        return Mono.fromCallable {
+            listOf("BUY", "SELL").forEach { decisionType ->
+                val snapshot = decisions
+                    .whereEqualTo("productId", productId)
+                    .whereEqualTo("decisionType", decisionType)
+                    .whereEqualTo("dryRun", false)
+                    .whereEqualTo("coinbaseSuccess", true)
+                    .whereEqualTo("outcomeScored", false)
+                    .limit(20)
+                    .get()
+                    .get()
+
+                snapshot.documents.forEach { doc ->
+                    val entryPrice = doc.getString("price")?.toBigDecimalOrNull() ?: return@forEach
+                    if (entryPrice <= BigDecimal.ZERO) return@forEach
+
+                    val rawOutcomePercent = currentPrice.subtract(entryPrice)
+                        .divide(entryPrice, 6, RoundingMode.HALF_UP)
+                        .multiply(BigDecimal("100"))
+
+                    val outcomePnlPercent = if (decisionType == "BUY") {
+                        rawOutcomePercent
+                    } else {
+                        rawOutcomePercent.negate()
+                    }
+
+                    doc.reference.update(
+                        mapOf(
+                            "outcomeScored" to true,
+                            "outcomeScoredAt" to Timestamp.now(),
+                            "outcomePrice" to currentPrice.toPlainString(),
+                            "outcomePnlPercent" to outcomePnlPercent.toPlainString(),
+                        )
+                    ).get()
+                }
+            }
+            null
+        }.subscribeOn(Schedulers.boundedElastic()).then()
+    }
+
+    fun getReasonCodeStats(reasonCode: String, since: Instant): Mono<ReasonCodeStats> {
+        if (reasonCode.isBlank() || reasonCode == "NO_CLEAR_EDGE") return Mono.just(ReasonCodeStats.empty())
+
+        return Mono.fromCallable {
+            val snapshot = decisions
+                .whereEqualTo("reasonCode", reasonCode)
+                .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
+                .orderBy("createdAt", Query.Direction.ASCENDING)
+                .get()
+                .get()
+
+            val outcomes = snapshot.documents.mapNotNull { doc ->
+                doc.getString("outcomePnlPercent")?.toBigDecimalOrNull()
+            }
+
+            if (outcomes.isEmpty()) return@fromCallable ReasonCodeStats.empty()
+
+            val wins = outcomes.count { it > BigDecimal.ZERO }.toLong()
+            ReasonCodeStats(
+                count = outcomes.size.toLong(),
+                wins = wins,
+                winRatePercent = BigDecimal(wins)
+                    .divide(BigDecimal(outcomes.size), 6, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal("100")),
+            )
+        }.subscribeOn(Schedulers.boundedElastic())
     }
 
     fun hasRecentLiveBuy(productId: String, since: Instant): Mono<Boolean> {
@@ -258,6 +384,12 @@ data class PositionSnapshot(
     val drawdownFromHighPercent: BigDecimal,
     val buyCount: Long,
     val sellCount: Long,
+    val activeReasonCode: String,
+    val activeThesis: String,
+    val activeInvalidationCondition: String,
+    val activeProfitTargetPercent: BigDecimal,
+    val activeStopLossPercent: BigDecimal,
+    val activeMaxHoldHours: Long,
 ) {
     companion object {
         fun empty(productId: String) = PositionSnapshot(
@@ -272,6 +404,27 @@ data class PositionSnapshot(
             drawdownFromHighPercent = BigDecimal.ZERO,
             buyCount = 0,
             sellCount = 0,
+            activeReasonCode = "NO_CLEAR_EDGE",
+            activeThesis = "",
+            activeInvalidationCondition = "",
+            activeProfitTargetPercent = BigDecimal.ZERO,
+            activeStopLossPercent = BigDecimal.ZERO,
+            activeMaxHoldHours = 0,
+        )
+    }
+}
+
+
+data class ReasonCodeStats(
+    val count: Long,
+    val wins: Long,
+    val winRatePercent: BigDecimal,
+) {
+    companion object {
+        fun empty() = ReasonCodeStats(
+            count = 0,
+            wins = 0,
+            winRatePercent = BigDecimal.ZERO,
         )
     }
 }
