@@ -12,6 +12,7 @@ import com.example.cryptobot.strategy.SimpleDipBuyStrategy
 import com.example.cryptobot.strategy.TradingDecision
 import org.slf4j.LoggerFactory
 import org.springframework.boot.CommandLineRunner
+import org.springframework.boot.ExitCodeGenerator
 import org.springframework.boot.SpringApplication
 import org.springframework.context.ConfigurableApplicationContext
 import org.springframework.stereotype.Component
@@ -112,7 +113,10 @@ class BotRunner(
         } finally {
             if (props.exitOnCompletion) {
                 log.info("Exiting application after bot run with code {}", exitCode)
-                val springExitCode = SpringApplication.exit(applicationContext) { exitCode }
+                val springExitCode = SpringApplication.exit(
+                    applicationContext,
+                    { exitCode }
+                )
                 exitProcess(springExitCode)
             }
         }
