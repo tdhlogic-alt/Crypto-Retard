@@ -42,49 +42,37 @@ class BotRunner(
         buildSnapshots()
             .flatMap { snapshots ->
                 if (props.agentEnabled) {
-                    Flux.fromIterable(snapshots)
-                        .flatMap { snapshot ->
-                            agentClient.decide(snapshot)
-                                .map { agentDecision -> snapshot to agentDecision }
-                        }
-                        .collectList()
-                        .flatMap { rankedAgentResults ->
-                            val best = rankedAgentResults
-                                .sortedByDescending { (_, decision) -> decision.score }
-                                .firstOrNull()
+                    agentClient.decidePortfolio(snapshots)
+                        .flatMap { agentDecision ->
+                            log.info(
+                                "Portfolio agent decision: product={} action={} score={} confidence={} fundingProduct={} reason={}",
+                                agentDecision.productId,
+                                agentDecision.action,
+                                agentDecision.score,
+                                agentDecision.confidence,
+                                agentDecision.fundingProductId,
+                                agentDecision.reason
+                            )
 
-                            if (best == null) {
-                                log.info("No agent decisions produced.")
-                                Mono.just(Unit)
-                            } else {
-                                val snapshot = best.first
-                                val agentDecision = best.second
+                            alerts.send(
+                                """
+                                🤖 Portfolio Agent Decision
 
-                                log.info(
-                                    "Top ranked opportunity: product={} score={} action={} confidence={} reason={}",
-                                    agentDecision.productId,
-                                    agentDecision.score,
-                                    agentDecision.action,
-                                    agentDecision.confidence,
-                                    agentDecision.reason
-                                )
-                                alerts.send(
-                                    """
-                                    🤖 Agent Decision
-                                    
-                                    Product: ${agentDecision.productId}
-                                    Action: ${agentDecision.action}
-                                    Score: ${agentDecision.score}
-                                    Confidence: ${agentDecision.confidence}
-                                    
-                                    Reason:
-                                    ${agentDecision.reason}
-                                    """.trimIndent()
-                                ).then(Mono.defer {
-                                    val validatedDecision = agentValidator.validate(snapshot, agentDecision)
-                                    execute(snapshot, validatedDecision)
-                                })
-                            }
+                                Product: ${agentDecision.productId}
+                                Action: ${agentDecision.action}
+                                Score: ${agentDecision.score}
+                                Confidence: ${agentDecision.confidence}
+                                Funding Product: ${agentDecision.fundingProductId.ifBlank { "N/A" }}
+
+                                Reason:
+                                ${agentDecision.reason}
+                                """.trimIndent()
+                            ).then(Mono.defer {
+                                val validatedDecision = agentValidator.validatePortfolio(snapshots, agentDecision)
+                                val primarySnapshot = snapshots.firstOrNull { it.productId == agentDecision.productId }
+                                    ?: snapshots.first()
+                                execute(primarySnapshot, validatedDecision, snapshots.associateBy { it.productId })
+                            })
                         }
                 } else {
                     Flux.fromIterable(snapshots)
@@ -280,7 +268,11 @@ class BotRunner(
             }
     }
 
-    private fun execute(snapshot: MarketSnapshot, decision: TradingDecision): Mono<Unit> = when (decision) {
+    private fun execute(
+        snapshot: MarketSnapshot,
+        decision: TradingDecision,
+        snapshotsByProduct: Map<String, MarketSnapshot> = mapOf(snapshot.productId to snapshot),
+    ): Mono<Unit> = when (decision) {
         is TradingDecision.Skip -> {
             log.info("SKIP: {}", decision.reason)
 
@@ -290,6 +282,113 @@ class BotRunner(
                 reason = decision.reason,
                 dryRun = props.dryRun,
             ).thenReturn(Unit)
+        }
+
+        is TradingDecision.Rotate -> {
+            val fundingSnapshot = snapshotsByProduct[decision.sell.productId]
+            val targetSnapshot = snapshotsByProduct[decision.buy.productId]
+
+            if (fundingSnapshot == null || targetSnapshot == null) {
+                val message = "🛑 ROTATE BLOCKED: missing snapshots for sell=${decision.sell.productId} buy=${decision.buy.productId}"
+                log.warn(message)
+                ledger.record(
+                    snapshot = snapshot,
+                    decisionType = "BLOCKED_ROTATE",
+                    reason = message,
+                    dryRun = props.dryRun,
+                ).then(alerts.send(message)).thenReturn(Unit)
+            } else if (props.dryRun) {
+                val message = "🧪 DRY RUN: would ROTATE by selling ${decision.sell.baseSize} of ${decision.sell.productId}, then buying ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}. Reason: ${decision.reason}"
+                log.warn(message)
+                ledger.record(
+                    snapshot = fundingSnapshot,
+                    decisionType = "ROTATE_SELL",
+                    reason = decision.sell.reason,
+                    dryRun = true,
+                    baseSize = decision.sell.baseSize,
+                    reasonCode = decision.sell.reasonCode,
+                ).then(
+                    ledger.record(
+                        snapshot = targetSnapshot,
+                        decisionType = "ROTATE_BUY",
+                        reason = decision.buy.reason,
+                        dryRun = true,
+                        quoteSizeUsd = decision.buy.quoteSizeUsd,
+                        reasonCode = decision.buy.reasonCode,
+                        thesis = decision.buy.thesis,
+                        invalidationCondition = decision.buy.invalidationCondition,
+                        profitTargetPercent = decision.buy.profitTargetPercent,
+                        stopLossPercent = decision.buy.stopLossPercent,
+                        maxHoldHours = decision.buy.maxHoldHours,
+                    )
+                ).then(alerts.send(message)).thenReturn(Unit)
+            } else if (!props.liveTradingEnabled) {
+                val message = "🛑 LIVE ROTATE BLOCKED: liveTradingEnabled=false. Would have sold ${decision.sell.baseSize} of ${decision.sell.productId}, then bought ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}"
+                log.warn(message)
+                ledger.record(
+                    snapshot = snapshot,
+                    decisionType = "BLOCKED_ROTATE",
+                    reason = message,
+                    dryRun = false,
+                    baseSize = decision.sell.baseSize,
+                    quoteSizeUsd = decision.buy.quoteSizeUsd,
+                    reasonCode = "REBALANCE",
+                ).then(alerts.send(message)).thenReturn(Unit)
+            } else {
+                val message = "🚨 LIVE ROTATE: SELL ${decision.sell.baseSize} of ${decision.sell.productId}, then BUY ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}. Reason: ${decision.reason}"
+                log.warn(message)
+
+                alerts.send(message)
+                    .then(coinbaseClient.createMarketSell(decision.sell.productId, decision.sell.baseSize))
+                    .flatMap { sellResponse ->
+                        ledger.record(
+                            snapshot = fundingSnapshot,
+                            decisionType = "ROTATE_SELL",
+                            reason = decision.sell.reason,
+                            dryRun = false,
+                            baseSize = decision.sell.baseSize,
+                            coinbaseSuccess = sellResponse.success,
+                            reasonCode = decision.sell.reasonCode,
+                            errorMessage = sellResponse.errorResponse?.toString(),
+                        ).then(
+                            if (sellResponse.success) {
+                                ledger.applyLiveSell(fundingSnapshot, decision.sell.baseSize, decision.sell.reasonCode)
+                                    .then(coinbaseClient.createMarketBuy(decision.buy.productId, decision.buy.quoteSizeUsd))
+                                    .flatMap { buyResponse ->
+                                        ledger.record(
+                                            snapshot = targetSnapshot,
+                                            decisionType = "ROTATE_BUY",
+                                            reason = decision.buy.reason,
+                                            dryRun = false,
+                                            quoteSizeUsd = decision.buy.quoteSizeUsd,
+                                            coinbaseSuccess = buyResponse.success,
+                                            reasonCode = decision.buy.reasonCode,
+                                            thesis = decision.buy.thesis,
+                                            invalidationCondition = decision.buy.invalidationCondition,
+                                            profitTargetPercent = decision.buy.profitTargetPercent,
+                                            stopLossPercent = decision.buy.stopLossPercent,
+                                            maxHoldHours = decision.buy.maxHoldHours,
+                                            errorMessage = buyResponse.errorResponse?.toString(),
+                                        ).then(
+                                            if (buyResponse.success) {
+                                                ledger.applyLiveBuy(
+                                                    snapshot = targetSnapshot,
+                                                    quoteSizeUsd = decision.buy.quoteSizeUsd,
+                                                    reasonCode = decision.buy.reasonCode,
+                                                    thesis = decision.buy.thesis,
+                                                    invalidationCondition = decision.buy.invalidationCondition,
+                                                    profitTargetPercent = decision.buy.profitTargetPercent,
+                                                    stopLossPercent = decision.buy.stopLossPercent,
+                                                    maxHoldHours = decision.buy.maxHoldHours,
+                                                )
+                                            } else Mono.empty()
+                                        )
+                                    }
+                            } else Mono.empty()
+                        )
+                    }
+                    .thenReturn(Unit)
+            }
         }
 
         is TradingDecision.Buy -> {

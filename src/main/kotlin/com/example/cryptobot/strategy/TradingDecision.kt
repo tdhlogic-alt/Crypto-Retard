@@ -67,6 +67,12 @@ sealed interface TradingDecision {
         val reasonCode: String = "NO_CLEAR_EDGE",
     ) : TradingDecision
 
+    data class Rotate(
+        val sell: Sell,
+        val buy: Buy,
+        val reason: String,
+    ) : TradingDecision
+
     data class Skip(
         val reason: String,
     ) : TradingDecision

@@ -27,6 +27,11 @@ data class BotProperties(
     val allowAiSellAtLoss: Boolean = false,
     val aiSellLossFloorPercent: BigDecimal = BigDecimal("-6.0"),
     val maxAiReasonLength: Int = 240,
+    val level2RotationEnabled: Boolean = false,
+    val minRotationEdgeScore: BigDecimal = BigDecimal("80"),
+    val minRotationScoreGap: BigDecimal = BigDecimal("15"),
+    val maxRotationSellPercent: BigDecimal = BigDecimal("35.0"),
+    val minRotationNotionalUsd: BigDecimal = BigDecimal("10.00"),
 )
 
 @ConfigurationProperties(prefix = "coinbase")

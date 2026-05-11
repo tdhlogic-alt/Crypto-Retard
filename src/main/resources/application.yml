@@ -51,6 +51,13 @@ bot:
   ai-sell-loss-floor-percent: ${BOT_AI_SELL_LOSS_FLOOR_PERCENT:-6.0}
   max-ai-reason-length: ${BOT_MAX_AI_REASON_LENGTH:240}
 
+  # Level 2 portfolio rotation: allows the agent to sell a weak held asset to fund a stronger BUY.
+  level2-rotation-enabled: ${BOT_LEVEL2_ROTATION_ENABLED:false}
+  min-rotation-edge-score: ${BOT_MIN_ROTATION_EDGE_SCORE:80}
+  min-rotation-score-gap: ${BOT_MIN_ROTATION_SCORE_GAP:15}
+  max-rotation-sell-percent: ${BOT_MAX_ROTATION_SELL_PERCENT:35.0}
+  min-rotation-notional-usd: ${BOT_MIN_ROTATION_NOTIONAL_USD:10.00}
+
 openai:
   api-key: ${OPENAI_API_KEY:}
   model: ${OPENAI_MODEL:gpt-5.4-mini}

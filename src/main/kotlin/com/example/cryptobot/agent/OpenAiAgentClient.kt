@@ -3,6 +3,7 @@ package com.example.cryptobot.agent
 import com.example.cryptobot.config.BotProperties
 import com.example.cryptobot.config.OpenAiProperties
 import com.example.cryptobot.strategy.MarketSnapshot
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
@@ -20,53 +21,88 @@ class OpenAiAgentClient(
         .baseUrl("https://api.openai.com")
         .build()
 
+    fun decidePortfolio(snapshots: List<MarketSnapshot>): Mono<AgentTradeDecision> {
+        val fallbackProduct = snapshots.firstOrNull()?.productId ?: "BTC-USD"
+        if (openAiProps.apiKey.isBlank()) {
+            return Mono.just(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "OpenAI API key not configured"))
+        }
+        if (snapshots.isEmpty()) {
+            return Mono.just(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "No market snapshots available"))
+        }
+
+        val portfolioLines = snapshots.joinToString("\n") { s ->
+            """
+            - ${s.productId}: price=${s.price}, usdAvailable=${s.usdAvailable}, balance=${s.cryptoBalance}, valueUsd=${s.cryptoValueUsd}, allocationPct=${s.portfolioAllocationPercent}, avgCost=${s.avgCostBasis}, unrealizedPnlPct=${s.unrealizedPnlPercent}, unrealizedPnlUsd=${s.unrealizedPnlUsd}, drawdownFromHighPct=${s.drawdownFromHighPercent}, regime=${s.marketRegime}, trend1h=${s.trend1hPercent}, trend4h=${s.trend4hPercent}, trend24h=${s.trend24hPercent}, trend7d=${s.trend7dPercent}, rsi14=${s.rsi14}, volatility24h=${s.volatility24hPercent}, activeThesis=${s.activeThesis.take(120)}, invalidation=${s.activeInvalidationCondition.take(120)}
+            """.trimIndent()
+        }
+
+        val prompt = """
+            You are an AI crypto portfolio manager for a small spot-only Coinbase account.
+            Evaluate the entire portfolio in one pass and return exactly one action: BUY, SELL, ROTATE, or SKIP.
+
+            Level 2 ROTATE behavior:
+            - Use ROTATE only when a new BUY opportunity is meaningfully stronger than a currently held weak asset.
+            - ROTATE means: sell part of fundingProductId first, then buy productId.
+            - Do not rotate just to churn; require a clear score gap and a strong edge.
+            - fundingProductId must be a held asset with balance > 0 and must be different from productId.
+            - fundingBaseSize should normally be 10%-35% of that holding, never the whole position unless risk is extreme.
+            - quoteSizeUsd is the intended BUY size after the funding sell. Keep it <= ${botProps.maxBuyQuoteSizeUsd}.
+            - Avoid selling a position at a small loss unless thesis is invalidated, downside momentum is severe, or the new opportunity is substantially stronger.
+
+            BUY behavior:
+            - Use BUY when available USD can fund the trade without violating cash reserve.
+            - Prefer BUY over ROTATE when there is already enough USD.
+
+            SELL behavior:
+            - Use SELL for profit protection, trailing stop, stop loss, or thesis invalidation.
+            - Prefer partial sells, usually 25%-50% of the held asset.
+
+            Risk controls and configured limits:
+            allowedProducts=${botProps.productIds}
+            usdCashReserve=${botProps.minUsdCashReserve}
+            configuredBuySize=${botProps.buyQuoteSizeUsd}
+            maxBuySize=${botProps.maxBuyQuoteSizeUsd}
+            maxAssetAllocationPct=${botProps.maxAssetAllocationPercent}
+            minRotationEdgeScore=${botProps.minRotationEdgeScore}
+            minRotationScoreGap=${botProps.minRotationScoreGap}
+            maxRotationSellPct=${botProps.maxRotationSellPercent}
+            minRotationNotionalUsd=${botProps.minRotationNotionalUsd}
+
+            Return fields:
+            - action: BUY, SELL, ROTATE, or SKIP
+            - productId: BUY target for BUY/ROTATE, SELL target for SELL, best watched product for SKIP
+            - quoteSizeUsd: BUY size for BUY/ROTATE, otherwise 0
+            - baseSize: SELL size for SELL, otherwise 0
+            - fundingProductId: asset to sell first for ROTATE, otherwise empty string
+            - fundingBaseSize: base units to sell first for ROTATE, otherwise 0
+            - fundingReason: concise reason for funding sell, otherwise empty string
+            - confidence: 0.0-1.0
+            - score: 0-100 opportunity score for the primary action
+            - reasonCode: one of OVERSOLD_BOUNCE, BREAKOUT_CONTINUATION, MOMENTUM_REVERSAL, PROFIT_PROTECTION, TRAILING_STOP, STOP_LOSS, THESIS_INVALIDATED, REBALANCE, NO_CLEAR_EDGE
+            - thesis/invalidationCondition/profitTargetPercent/stopLossPercent/maxHoldHours: required for BUY/ROTATE target; otherwise empty/0.
+            - reason: <= ${botProps.maxAiReasonLength} chars.
+
+            Portfolio snapshots:
+            $portfolioLines
+        """.trimIndent()
+
+        return callOpenAi(prompt, fallbackProduct)
+    }
+
     fun decide(snapshot: MarketSnapshot): Mono<AgentTradeDecision> {
         if (openAiProps.apiKey.isBlank()) {
-            return Mono.just(
-                AgentTradeDecision(
-                    action = "SKIP",
-                    productId = snapshot.productId,
-                    reason = "OpenAI API key not configured",
-                )
-            )
+            return Mono.just(AgentTradeDecision(action = "SKIP", productId = snapshot.productId, reason = "OpenAI API key not configured"))
         }
 
         val prompt = """
             You are an AI crypto swing trading agent.
-            
-            Your job is to evaluate whether this asset is an attractive short-term trading opportunity relative to other crypto assets.
-            
-            Consider:
-            - 24h momentum
-            - volatility
-            - proximity to highs/lows
-            - volume
-            - dip-buy opportunities
-            - trend continuation potential
-            - risk/reward
-            - 1h, 4h, and 24h trend direction
-            - RSI14 overbought/oversold state
-            - 24h volatility
-            - proximity to 24h candle high/low
-            - volume and momentum confirmation
-            
-            You may recommend BUY, SELL, or SKIP.
-            
-            You should be willing to recommend BUY or SELL when there is a moderate short-term opportunity, even if the signal is not perfect. Avoid overtrading, but do not require extreme conviction.            
-            Assign:
-            - confidence (0.0-1.0)
-            - score (0-100 relative opportunity score)
-            - reasonCode from exactly one of:
-              OVERSOLD_BOUNCE, BREAKOUT_CONTINUATION, MOMENTUM_REVERSAL, PROFIT_PROTECTION,
-              TRAILING_STOP, STOP_LOSS, THESIS_INVALIDATED, REBALANCE, NO_CLEAR_EDGE
-            - thesis: concise trade thesis for BUY decisions, otherwise empty string
-            - invalidationCondition: concise condition that would make the BUY thesis invalid, otherwise empty string
-            - profitTargetPercent: target profit percent for BUY decisions, otherwise 0
-            - stopLossPercent: thesis-based stop loss percent for BUY decisions, otherwise 0
-            - maxHoldHours: intended max holding period for BUY decisions, otherwise 0
-            
-            Prefer higher scores only for the strongest opportunities.
-            
+            Evaluate this single asset and recommend BUY, SELL, or SKIP.
+            Consider momentum, volatility, RSI14, proximity to highs/lows, risk/reward, current position, P&L, thesis, and allocation.
+            Do not recommend SELL for assets with zero balance. Prefer partial exits for SELL.
+            Existing configured buy size: ${botProps.buyQuoteSizeUsd}
+            Max buy size allowed: ${botProps.maxBuyQuoteSizeUsd}
+            Keep reason <= ${botProps.maxAiReasonLength} characters.
+
             Market snapshot:
             productId=${snapshot.productId}
             price=${snapshot.price}
@@ -78,61 +114,24 @@ class OpenAiAgentClient(
             portfolioAllocationPercent=${snapshot.portfolioAllocationPercent}
             avgCostBasis=${snapshot.avgCostBasis}
             totalInvested=${snapshot.totalInvested}
-            realizedPnlUsd=${snapshot.realizedPnlUsd}
             unrealizedPnlUsd=${snapshot.unrealizedPnlUsd}
             unrealizedPnlPercent=${snapshot.unrealizedPnlPercent}
-            highestPriceSeen=${snapshot.highestPriceSeen}
             drawdownFromHighPercent=${snapshot.drawdownFromHighPercent}
-            buyCount=${snapshot.buyCount}
-            sellCount=${snapshot.sellCount}
             marketRegime=${snapshot.marketRegime}
-            reasonCode30dWinRate=${snapshot.reasonCode30dWinRate}
-            reasonCode30dCount=${snapshot.reasonCode30dCount}
             activeThesis=${snapshot.activeThesis}
             activeInvalidationCondition=${snapshot.activeInvalidationCondition}
-            activeProfitTargetPercent=${snapshot.activeProfitTargetPercent}
-            activeStopLossPercent=${snapshot.activeStopLossPercent}
-            activeMaxHoldHours=${snapshot.activeMaxHoldHours}
             trend1hPercent=${snapshot.trend1hPercent}
             trend4hPercent=${snapshot.trend4hPercent}
             trend24hPercent=${snapshot.trend24hPercent}
+            trend7dPercent=${snapshot.trend7dPercent}
             rsi14=${snapshot.rsi14}
             volatility24hPercent=${snapshot.volatility24hPercent}
-            candleHigh24h=${snapshot.candleHigh24h}
-            candleLow24h=${snapshot.candleLow24h}
-            trend7dPercent=${snapshot.trend7dPercent}
-            candleHigh7d=${snapshot.candleHigh7d}
-            candleLow7d=${snapshot.candleLow7d}
-            
-            Use market regime, thesis, and position awareness:
-            - BULL_TREND: prefer buying pullbacks and holding winners; avoid selling solely because RSI is high.
-            - BEAR_TREND: require stronger BUY evidence; cut/avoid weak altcoin setups.
-            - SIDEWAYS: favor mean reversion; take profits sooner near resistance.
-            - HIGH_VOLATILITY or CRASH: be defensive; avoid low-conviction buys; protect profitable positions.
-            - RECOVERY: allow smaller starter buys when momentum confirms recovery.
-            - For BUY, create a specific thesis, invalidationCondition, profitTargetPercent, stopLossPercent, and maxHoldHours.
-            - For SELL, compare current market behavior against activeThesis and activeInvalidationCondition when present.
-            - Use reasonCode30dWinRate only as a weak prior; ignore it when reasonCode30dCount is low.
-
-            Use portfolio and position awareness:
-            - Avoid buying more of an asset that already has a large allocation.
-            - Avoid repeated averaging down unless the setup is strong and risk/reward improved.
-            - Consider BUY more favorably when current price is below avgCostBasis but trend/RSI/volume suggest recovery.
-            - Consider SELL only if cryptoBalance > 0.
-            - Do not recommend SELL for assets with zero balance.
-            - Consider partial SELL when unrealizedPnlPercent is meaningfully positive and momentum is weakening.
-            - Consider SELL when drawdownFromHighPercent is large after a profitable move, as a trailing-stop style exit.
-            - Avoid SELL solely because price is below avgCostBasis unless the thesis is invalidated or downside momentum is severe.
-            - Prefer diversifying across allowed assets when opportunity quality is similar.
-            
-            Existing configured buy size: ${botProps.buyQuoteSizeUsd}
-            Max buy size allowed: ${botProps.maxBuyQuoteSizeUsd}
-            
-            Prefer BUY over SKIP when momentum or dip conditions appear favorable, but remain risk-aware.
-            For SELL, prefer partial exits; baseSize should usually be 25%-50% of cryptoBalance unless risk is extreme.
-            Keep reason <= ${botProps.maxAiReasonLength} characters.
         """.trimIndent()
 
+        return callOpenAi(prompt, snapshot.productId)
+    }
+
+    private fun callOpenAi(prompt: String, fallbackProductId: String): Mono<AgentTradeDecision> {
         val request = mapOf(
             "model" to openAiProps.model,
             "input" to prompt,
@@ -141,53 +140,7 @@ class OpenAiAgentClient(
                     "type" to "json_schema",
                     "name" to "agent_trade_decision",
                     "strict" to true,
-                    "schema" to mapOf(
-                        "type" to "object",
-                        "additionalProperties" to false,
-                        "properties" to mapOf(
-                            "action" to mapOf("type" to "string", "enum" to listOf("BUY", "SELL", "SKIP")),
-                            "productId" to mapOf("type" to "string"),
-                            "quoteSizeUsd" to mapOf("type" to "string"),
-                            "confidence" to mapOf("type" to "number"),
-                            "reason" to mapOf("type" to "string"),
-                            "score" to mapOf("type" to "number"),
-                            "baseSize" to mapOf("type" to "string"),
-                            "reasonCode" to mapOf(
-                                "type" to "string",
-                                "enum" to listOf(
-                                    "OVERSOLD_BOUNCE",
-                                    "BREAKOUT_CONTINUATION",
-                                    "MOMENTUM_REVERSAL",
-                                    "PROFIT_PROTECTION",
-                                    "TRAILING_STOP",
-                                    "STOP_LOSS",
-                                    "THESIS_INVALIDATED",
-                                    "REBALANCE",
-                                    "NO_CLEAR_EDGE",
-                                )
-                            ),
-                            "thesis" to mapOf("type" to "string"),
-                            "invalidationCondition" to mapOf("type" to "string"),
-                            "profitTargetPercent" to mapOf("type" to "string"),
-                            "stopLossPercent" to mapOf("type" to "string"),
-                            "maxHoldHours" to mapOf("type" to "integer"),
-                        ),
-                        "required" to listOf(
-                            "action",
-                            "productId",
-                            "quoteSizeUsd",
-                            "baseSize",
-                            "confidence",
-                            "reason",
-                            "score",
-                            "reasonCode",
-                            "thesis",
-                            "invalidationCondition",
-                            "profitTargetPercent",
-                            "stopLossPercent",
-                            "maxHoldHours",
-                        )
-                    )
+                    "schema" to decisionSchema()
                 )
             ),
         )
@@ -200,9 +153,7 @@ class OpenAiAgentClient(
             .onStatus({ it.isError }) { response ->
                 response.bodyToMono<String>()
                     .defaultIfEmpty("")
-                    .flatMap { body ->
-                        Mono.error(RuntimeException("OpenAI failed: status=${response.statusCode()} body=$body"))
-                    }
+                    .flatMap { body -> Mono.error(RuntimeException("OpenAI failed: status=${response.statusCode()} body=$body")) }
             }
             .bodyToMono(String::class.java)
             .map { body ->
@@ -211,34 +162,60 @@ class OpenAiAgentClient(
                     ?.get("content")?.firstOrNull()
                     ?.get("text")?.asText()
                     ?: error("No structured output text from OpenAI")
-
-                val json = objectMapper.readTree(text)
-
-                AgentTradeDecision(
-                    action = json["action"].asText(),
-                    productId = json["productId"].asText(),
-                    quoteSizeUsd = json["quoteSizeUsd"].asText().toBigDecimal(),
-                    confidence = json["confidence"].decimalValue(),
-                    reason = json["reason"].asText(),
-                    score = BigDecimal(json["score"].asText()),
-                    baseSize = json["baseSize"].asText().toBigDecimal(),
-                    reasonCode = json["reasonCode"].asText(),
-                    thesis = json["thesis"].asText(),
-                    invalidationCondition = json["invalidationCondition"].asText(),
-                    profitTargetPercent = json["profitTargetPercent"].asText().toBigDecimal(),
-                    stopLossPercent = json["stopLossPercent"].asText().toBigDecimal(),
-                    maxHoldHours = json["maxHoldHours"].asLong(),
-                )
+                parseDecision(objectMapper.readTree(text))
             }
             .onErrorResume { ex ->
-                Mono.just(
-                    AgentTradeDecision(
-                        action = "SKIP",
-                        productId = snapshot.productId,
-                        confidence = java.math.BigDecimal.ZERO,
-                        reason = "OpenAI agent failed: ${ex.message}",
-                    )
-                )
+                Mono.just(AgentTradeDecision(action = "SKIP", productId = fallbackProductId, reason = "OpenAI agent failed: ${ex.message}"))
             }
     }
+
+    private fun parseDecision(json: JsonNode): AgentTradeDecision = AgentTradeDecision(
+        action = json["action"].asText(),
+        productId = json["productId"].asText(),
+        quoteSizeUsd = json["quoteSizeUsd"].asText().toBigDecimal(),
+        confidence = json["confidence"].decimalValue(),
+        reason = json["reason"].asText(),
+        score = BigDecimal(json["score"].asText()),
+        baseSize = json["baseSize"].asText().toBigDecimal(),
+        reasonCode = json["reasonCode"].asText(),
+        thesis = json["thesis"].asText(),
+        invalidationCondition = json["invalidationCondition"].asText(),
+        profitTargetPercent = json["profitTargetPercent"].asText().toBigDecimal(),
+        stopLossPercent = json["stopLossPercent"].asText().toBigDecimal(),
+        maxHoldHours = json["maxHoldHours"].asLong(),
+        fundingProductId = json["fundingProductId"].asText(),
+        fundingBaseSize = json["fundingBaseSize"].asText().toBigDecimal(),
+        fundingReason = json["fundingReason"].asText(),
+    )
+
+    private fun decisionSchema(): Map<String, Any> = mapOf(
+        "type" to "object",
+        "additionalProperties" to false,
+        "properties" to mapOf(
+            "action" to mapOf("type" to "string", "enum" to listOf("BUY", "SELL", "ROTATE", "SKIP")),
+            "productId" to mapOf("type" to "string"),
+            "quoteSizeUsd" to mapOf("type" to "string"),
+            "confidence" to mapOf("type" to "number"),
+            "reason" to mapOf("type" to "string"),
+            "score" to mapOf("type" to "number"),
+            "baseSize" to mapOf("type" to "string"),
+            "fundingProductId" to mapOf("type" to "string"),
+            "fundingBaseSize" to mapOf("type" to "string"),
+            "fundingReason" to mapOf("type" to "string"),
+            "reasonCode" to mapOf("type" to "string", "enum" to listOf(
+                "OVERSOLD_BOUNCE", "BREAKOUT_CONTINUATION", "MOMENTUM_REVERSAL", "PROFIT_PROTECTION",
+                "TRAILING_STOP", "STOP_LOSS", "THESIS_INVALIDATED", "REBALANCE", "NO_CLEAR_EDGE"
+            )),
+            "thesis" to mapOf("type" to "string"),
+            "invalidationCondition" to mapOf("type" to "string"),
+            "profitTargetPercent" to mapOf("type" to "string"),
+            "stopLossPercent" to mapOf("type" to "string"),
+            "maxHoldHours" to mapOf("type" to "integer"),
+        ),
+        "required" to listOf(
+            "action", "productId", "quoteSizeUsd", "baseSize", "fundingProductId", "fundingBaseSize", "fundingReason",
+            "confidence", "reason", "score", "reasonCode", "thesis", "invalidationCondition",
+            "profitTargetPercent", "stopLossPercent", "maxHoldHours"
+        )
+    )
 }
