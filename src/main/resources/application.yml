@@ -29,11 +29,11 @@ bot:
     - ADA-USD
     - XRP-USD
 
-  buy-quote-size-usd: "10.00"
-  min-usd-cash-reserve: "500.00"
-  max-single-buy-usd: "10.00"
-  max-daily-buy-usd: "100.00"
-  dip-threshold-percent: "5.0"
+  buy-quote-size-usd: "25.00"
+  min-usd-cash-reserve: "75.00"
+  max-single-buy-usd: "40.00"
+  max-daily-buy-usd: "150.00"
+  dip-threshold-percent: "4.0"
 
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
