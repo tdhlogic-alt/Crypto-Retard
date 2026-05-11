@@ -184,7 +184,7 @@ class OpenAiAgentClient(
                 parsePlan(objectMapper.readTree(text))
             }
             .onErrorResume { ex ->
-                Mono.just(AgentTradePlan(listOf(AgentTradeDecision(action = "SKIP", productId = fallbackProductId, reason = "OpenAI agent failed: ${ex.message}"))))
+                Mono.just(AgentTradePlan(listOf(AgentTradeDecision(action = "SKIP", productId = fallbackProductId, reason = "OpenAI agent failed: ${ex.message} due to ${ex.cause} with stacktrace: ${ex.stackTraceToString()}"))))
             }
     }
 
