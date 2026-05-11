@@ -2,6 +2,10 @@ package com.example.cryptobot.agent
 
 import java.math.BigDecimal
 
+data class AgentTradePlan(
+    val decisions: List<AgentTradeDecision> = emptyList(),
+)
+
 data class AgentTradeDecision(
     val action: String = "SKIP",
     val productId: String = "BTC-USD",

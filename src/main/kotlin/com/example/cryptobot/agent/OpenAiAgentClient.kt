@@ -21,13 +21,22 @@ class OpenAiAgentClient(
         .baseUrl("https://api.openai.com")
         .build()
 
-    fun decidePortfolio(snapshots: List<MarketSnapshot>): Mono<AgentTradeDecision> {
+    fun decidePortfolio(snapshots: List<MarketSnapshot>): Mono<AgentTradeDecision> =
+        decidePortfolioPlan(snapshots).map { plan ->
+            plan.decisions.firstOrNull() ?: AgentTradeDecision(
+                action = "SKIP",
+                productId = snapshots.firstOrNull()?.productId ?: "BTC-USD",
+                reason = "Agent returned an empty plan",
+            )
+        }
+
+    fun decidePortfolioPlan(snapshots: List<MarketSnapshot>): Mono<AgentTradePlan> {
         val fallbackProduct = snapshots.firstOrNull()?.productId ?: "BTC-USD"
         if (openAiProps.apiKey.isBlank()) {
-            return Mono.just(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "OpenAI API key not configured"))
+            return Mono.just(AgentTradePlan(listOf(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "OpenAI API key not configured"))))
         }
         if (snapshots.isEmpty()) {
-            return Mono.just(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "No market snapshots available"))
+            return Mono.just(AgentTradePlan(listOf(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "No market snapshots available"))))
         }
 
         val portfolioLines = snapshots.joinToString("\n") { s ->
@@ -38,7 +47,8 @@ class OpenAiAgentClient(
 
         val prompt = """
             You are an AI crypto portfolio manager for a small spot-only Coinbase account.
-            Evaluate the entire portfolio in one pass and return exactly one action: BUY, SELL, ROTATE, or SKIP.
+            Evaluate the entire portfolio in one pass and return a ranked action plan containing up to ${botProps.maxActionsPerRun} actions.
+            Each action may be BUY, SELL, ROTATE, or SKIP. Return SKIP only when there are no executable BUY/SELL/ROTATE actions.
 
             Level 2 ROTATE behavior:
             - Use ROTATE only when a new BUY opportunity is meaningfully stronger than a currently held weak asset.
@@ -68,7 +78,16 @@ class OpenAiAgentClient(
             maxRotationSellPct=${botProps.maxRotationSellPercent}
             minRotationNotionalUsd=${botProps.minRotationNotionalUsd}
 
-            Return fields:
+            Multi-action planning rules:
+            - Return only actions worth executing in this scheduled run. Do not fill the plan just because slots exist.
+            - Rank actions from most urgent/highest edge to lowest edge.
+            - Never include more than ${botProps.maxBuysPerRun} BUY actions, ${botProps.maxSellsPerRun} SELL actions, or ${botProps.maxRotationsPerRun} ROTATE actions.
+            - Do not include two actions that buy the same product in the same run.
+            - Do not include two actions that sell the same funding/held product in the same run unless risk is extreme.
+            - Treat total new BUY spending as capped by maxTotalBuyUsdPerRun=${botProps.maxTotalBuyUsdPerRun} and available USD after reserve.
+            - Prefer urgent risk-reduction SELLs before BUYs; prefer BUY over ROTATE when cash is already available.
+
+            Each decision object fields:
             - action: BUY, SELL, ROTATE, or SKIP
             - productId: BUY target for BUY/ROTATE, SELL target for SELL, best watched product for SKIP
             - quoteSizeUsd: BUY size for BUY/ROTATE, otherwise 0
@@ -86,7 +105,7 @@ class OpenAiAgentClient(
             $portfolioLines
         """.trimIndent()
 
-        return callOpenAi(prompt, fallbackProduct)
+        return callOpenAiPlan(prompt, fallbackProduct)
     }
 
     fun decide(snapshot: MarketSnapshot): Mono<AgentTradeDecision> {
@@ -131,16 +150,16 @@ class OpenAiAgentClient(
         return callOpenAi(prompt, snapshot.productId)
     }
 
-    private fun callOpenAi(prompt: String, fallbackProductId: String): Mono<AgentTradeDecision> {
+    private fun callOpenAiPlan(prompt: String, fallbackProductId: String): Mono<AgentTradePlan> {
         val request = mapOf(
             "model" to openAiProps.model,
             "input" to prompt,
             "text" to mapOf(
                 "format" to mapOf(
                     "type" to "json_schema",
-                    "name" to "agent_trade_decision",
+                    "name" to "agent_trade_plan",
                     "strict" to true,
-                    "schema" to decisionSchema()
+                    "schema" to planSchema()
                 )
             ),
         )
@@ -162,11 +181,24 @@ class OpenAiAgentClient(
                     ?.get("content")?.firstOrNull()
                     ?.get("text")?.asText()
                     ?: error("No structured output text from OpenAI")
-                parseDecision(objectMapper.readTree(text))
+                parsePlan(objectMapper.readTree(text))
             }
             .onErrorResume { ex ->
-                Mono.just(AgentTradeDecision(action = "SKIP", productId = fallbackProductId, reason = "OpenAI agent failed: ${ex.message}"))
+                Mono.just(AgentTradePlan(listOf(AgentTradeDecision(action = "SKIP", productId = fallbackProductId, reason = "OpenAI agent failed: ${ex.message}"))))
             }
+    }
+
+    private fun callOpenAi(prompt: String, fallbackProductId: String): Mono<AgentTradeDecision> =
+        callOpenAiPlan(prompt, fallbackProductId).map { plan ->
+            plan.decisions.firstOrNull() ?: AgentTradeDecision(action = "SKIP", productId = fallbackProductId, reason = "Agent returned an empty plan")
+        }
+
+    private fun parsePlan(json: JsonNode): AgentTradePlan {
+        val decisions = json["decisions"]
+            ?.map { parseDecision(it) }
+            ?.take(botProps.maxActionsPerRun)
+            ?: emptyList()
+        return AgentTradePlan(decisions)
     }
 
     private fun parseDecision(json: JsonNode): AgentTradeDecision = AgentTradeDecision(
@@ -186,6 +218,20 @@ class OpenAiAgentClient(
         fundingProductId = json["fundingProductId"].asText(),
         fundingBaseSize = json["fundingBaseSize"].asText().toBigDecimal(),
         fundingReason = json["fundingReason"].asText(),
+    )
+
+    private fun planSchema(): Map<String, Any> = mapOf(
+        "type" to "object",
+        "additionalProperties" to false,
+        "properties" to mapOf(
+            "decisions" to mapOf(
+                "type" to "array",
+                "minItems" to 1,
+                "maxItems" to botProps.maxActionsPerRun,
+                "items" to decisionSchema(),
+            )
+        ),
+        "required" to listOf("decisions"),
     )
 
     private fun decisionSchema(): Map<String, Any> = mapOf(
