@@ -201,24 +201,44 @@ class OpenAiAgentClient(
         return AgentTradePlan(decisions)
     }
 
-    private fun parseDecision(json: JsonNode): AgentTradeDecision = AgentTradeDecision(
-        action = json["action"].asText(),
-        productId = json["productId"].asText(),
-        quoteSizeUsd = json["quoteSizeUsd"].asText().toBigDecimal(),
-        confidence = json["confidence"].decimalValue(),
-        reason = json["reason"].asText(),
-        score = BigDecimal(json["score"].asText()),
-        baseSize = json["baseSize"].asText().toBigDecimal(),
-        reasonCode = json["reasonCode"].asText(),
-        thesis = json["thesis"].asText(),
-        invalidationCondition = json["invalidationCondition"].asText(),
-        profitTargetPercent = json["profitTargetPercent"].asText().toBigDecimal(),
-        stopLossPercent = json["stopLossPercent"].asText().toBigDecimal(),
-        maxHoldHours = json["maxHoldHours"].asLong(),
-        fundingProductId = json["fundingProductId"].asText(),
-        fundingBaseSize = json["fundingBaseSize"].asText().toBigDecimal(),
-        fundingReason = json["fundingReason"].asText(),
-    )
+    private fun JsonNode.textOrDefault(field: String, default: String): String {
+        val value = this[field] ?: return default
+        if (value.isNull) return default
+        val text = value.asText(default).trim()
+        return text.ifBlank { default }
+    }
+
+    private fun JsonNode.decimalOrZero(field: String): BigDecimal =
+        this[field]?.takeUnless { it.isNull }?.asText()?.trim()?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { BigDecimal(it) }.getOrDefault(BigDecimal.ZERO) }
+            ?: BigDecimal.ZERO
+
+    private fun JsonNode.longOrZero(field: String): Long =
+        this[field]?.takeUnless { it.isNull }?.asText()?.trim()?.toLongOrNull() ?: 0L
+
+    private fun parseDecision(json: JsonNode): AgentTradeDecision {
+        val action = json.textOrDefault("action", "SKIP").uppercase()
+        val safeAction = if (action in setOf("BUY", "SELL", "ROTATE", "SKIP")) action else "SKIP"
+
+        return AgentTradeDecision(
+            action = safeAction,
+            productId = json.textOrDefault("productId", "BTC-USD"),
+            quoteSizeUsd = json.decimalOrZero("quoteSizeUsd"),
+            confidence = json.decimalOrZero("confidence"),
+            reason = json.textOrDefault("reason", "No reason provided"),
+            score = json.decimalOrZero("score"),
+            baseSize = json.decimalOrZero("baseSize"),
+            reasonCode = json.textOrDefault("reasonCode", "NO_CLEAR_EDGE"),
+            thesis = json.textOrDefault("thesis", ""),
+            invalidationCondition = json.textOrDefault("invalidationCondition", ""),
+            profitTargetPercent = json.decimalOrZero("profitTargetPercent"),
+            stopLossPercent = json.decimalOrZero("stopLossPercent"),
+            maxHoldHours = json.longOrZero("maxHoldHours"),
+            fundingProductId = json.textOrDefault("fundingProductId", ""),
+            fundingBaseSize = json.decimalOrZero("fundingBaseSize"),
+            fundingReason = json.textOrDefault("fundingReason", ""),
+        )
+    }
 
     private fun planSchema(): Map<String, Any> = mapOf(
         "type" to "object",
