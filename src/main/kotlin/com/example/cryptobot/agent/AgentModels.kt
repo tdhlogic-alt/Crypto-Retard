@@ -16,4 +16,7 @@ data class AgentTradeDecision(
     val profitTargetPercent: BigDecimal = BigDecimal.ZERO,
     val stopLossPercent: BigDecimal = BigDecimal.ZERO,
     val maxHoldHours: Long = 0,
+    val fundingProductId: String = "",
+    val fundingBaseSize: BigDecimal = BigDecimal.ZERO,
+    val fundingReason: String = "",
 )
