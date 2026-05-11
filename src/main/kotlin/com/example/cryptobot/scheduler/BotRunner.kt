@@ -1,6 +1,7 @@
 package com.example.cryptobot.scheduler
 
 import com.example.cryptobot.agent.AgentDecisionValidator
+import com.example.cryptobot.agent.AgentTradeDecision
 import com.example.cryptobot.agent.OpenAiAgentClient
 import com.example.cryptobot.alerts.DiscordAlertClient
 import com.example.cryptobot.coinbase.CoinbaseClient
@@ -42,37 +43,23 @@ class BotRunner(
         buildSnapshots()
             .flatMap { snapshots ->
                 if (props.agentEnabled) {
-                    agentClient.decidePortfolio(snapshots)
-                        .flatMap { agentDecision ->
-                            log.info(
-                                "Portfolio agent decision: product={} action={} score={} confidence={} fundingProduct={} reason={}",
-                                agentDecision.productId,
-                                agentDecision.action,
-                                agentDecision.score,
-                                agentDecision.confidence,
-                                agentDecision.fundingProductId,
-                                agentDecision.reason
-                            )
+                    agentClient.decidePortfolioPlan(snapshots)
+                        .flatMap { agentPlan ->
+                            val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
+                            decisions.forEachIndexed { index, agentDecision ->
+                                log.info(
+                                    "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
+                                    index + 1,
+                                    agentDecision.productId,
+                                    agentDecision.action,
+                                    agentDecision.score,
+                                    agentDecision.confidence,
+                                    agentDecision.fundingProductId,
+                                    agentDecision.reason
+                                )
+                            }
 
-                            alerts.send(
-                                """
-                                🤖 Portfolio Agent Decision
-
-                                Product: ${agentDecision.productId}
-                                Action: ${agentDecision.action}
-                                Score: ${agentDecision.score}
-                                Confidence: ${agentDecision.confidence}
-                                Funding Product: ${agentDecision.fundingProductId.ifBlank { "N/A" }}
-
-                                Reason:
-                                ${agentDecision.reason}
-                                """.trimIndent()
-                            ).then(Mono.defer {
-                                val validatedDecision = agentValidator.validatePortfolio(snapshots, agentDecision)
-                                val primarySnapshot = snapshots.firstOrNull { it.productId == agentDecision.productId }
-                                    ?: snapshots.first()
-                                execute(primarySnapshot, validatedDecision, snapshots.associateBy { it.productId })
-                            })
+                            executeAgentPlan(snapshots, decisions)
                         }
                 } else {
                     Flux.fromIterable(snapshots)
@@ -113,6 +100,285 @@ class BotRunner(
 
         log.info("Bot job finished successfully")
     }
+
+    private fun formatAgentPlanAlert(decisions: List<AgentTradeDecision>): String {
+        if (decisions.isEmpty()) {
+            return "🤖 Portfolio Agent Plan: no decisions returned"
+        }
+
+        val lines = decisions.mapIndexed { index, decision ->
+            val funding = decision.fundingProductId.ifBlank { "N/A" }
+            "${index + 1}. ${decision.action} ${decision.productId} score=${decision.score} confidence=${decision.confidence} funding=$funding reason=${decision.reason}"
+        }
+
+        return """
+            🤖 Portfolio Agent Plan
+
+            Proposed actions: ${decisions.size}
+            Max executable this run: ${props.maxActionsPerRun}
+
+            ${lines.joinToString("\n")}
+        """.trimIndent()
+    }
+
+    private fun executeAgentPlan(
+        snapshots: List<MarketSnapshot>,
+        agentDecisions: List<AgentTradeDecision>,
+    ): Mono<Unit> {
+        val snapshotsByProduct = snapshots.associateBy { it.productId }
+        val validatedActions = agentDecisions
+            .take(props.maxActionsPerRun)
+            .map { agentDecision ->
+                val primarySnapshot = snapshotsByProduct[agentDecision.productId] ?: snapshots.first()
+                ValidatedPlanAction(
+                    agentDecision = agentDecision,
+                    snapshot = primarySnapshot,
+                    decision = agentValidator.validatePortfolio(snapshots, agentDecision),
+                )
+            }
+
+        val selection = selectExecutableActions(validatedActions, snapshotsByProduct)
+        val planStartedMessage = formatAgentPlanAlert(agentDecisions.take(props.maxActionsPerRun))
+
+        val executionMono = if (selection.executable.isEmpty()) {
+            val fallbackSnapshot = snapshots.first()
+            val reason = selection.skipped.firstOrNull()?.detail ?: "Agent plan contained no executable actions"
+            execute(fallbackSnapshot, TradingDecision.Skip(reason), snapshotsByProduct)
+        } else {
+            Flux.fromIterable(selection.executable)
+                .concatMap { action -> execute(action.snapshot, action.decision, snapshotsByProduct) }
+                .then()
+        }
+
+        val report = buildPlanExecutionReport(snapshots, selection)
+
+        return alerts.send(planStartedMessage)
+            .then(executionMono)
+            .then(ledger.recordPortfolioRun(report))
+            .then(alerts.send(formatPortfolioExecutionReport(report)))
+            .thenReturn(Unit)
+    }
+
+    private fun selectExecutableActions(
+        validatedActions: List<ValidatedPlanAction>,
+        snapshotsByProduct: Map<String, MarketSnapshot>,
+    ): PlanExecutionSelection {
+        var projectedUsd = snapshotsByProduct.values.firstOrNull()?.usdAvailable ?: BigDecimal.ZERO
+        var projectedBuyUsd = BigDecimal.ZERO
+        var buyCount = 0
+        var sellCount = 0
+        var rotateCount = 0
+
+        val projectedBalances = snapshotsByProduct.mapValues { it.value.cryptoBalance }.toMutableMap()
+        val boughtProducts = mutableSetOf<String>()
+        val soldProducts = mutableSetOf<String>()
+        val accepted = mutableListOf<ValidatedPlanAction>()
+        val skipped = mutableListOf<PlanActionReport>()
+
+        fun canSpend(amount: BigDecimal): Boolean =
+            amount > BigDecimal.ZERO &&
+                projectedUsd - amount >= props.minUsdCashReserve &&
+                projectedBuyUsd + amount <= props.maxTotalBuyUsdPerRun
+
+        fun reject(action: ValidatedPlanAction, detail: String) {
+            skipped += PlanActionReport.from(action, "SKIPPED", detail)
+        }
+
+        actionLoop@ for (action in validatedActions) {
+            val snapshot = action.snapshot
+            val decision = action.decision
+
+            when (decision) {
+                is TradingDecision.Skip -> reject(action, decision.reason)
+
+                is TradingDecision.Buy -> {
+                    if (buyCount >= props.maxBuysPerRun) { reject(action, "max buys per run reached"); continue@actionLoop }
+                    if (decision.productId in boughtProducts) { reject(action, "already buying ${decision.productId} this run"); continue@actionLoop }
+                    if (!canSpend(decision.quoteSizeUsd)) { reject(action, "insufficient projected USD after reserve or max total buy USD reached"); continue@actionLoop }
+
+                    projectedUsd -= decision.quoteSizeUsd
+                    projectedBuyUsd += decision.quoteSizeUsd
+                    buyCount += 1
+                    boughtProducts += decision.productId
+                    accepted += action
+                }
+
+                is TradingDecision.Sell -> {
+                    if (sellCount >= props.maxSellsPerRun) { reject(action, "max sells per run reached"); continue@actionLoop }
+                    if (decision.productId in soldProducts) { reject(action, "already selling ${decision.productId} this run"); continue@actionLoop }
+
+                    val availableBase = projectedBalances[decision.productId] ?: BigDecimal.ZERO
+                    if (decision.baseSize <= BigDecimal.ZERO || decision.baseSize > availableBase) { reject(action, "sell size exceeds projected available balance"); continue@actionLoop }
+
+                    val sellSnapshot = snapshotsByProduct[decision.productId] ?: snapshot
+                    projectedBalances[decision.productId] = availableBase - decision.baseSize
+                    projectedUsd += decision.baseSize.multiply(sellSnapshot.price)
+                    sellCount += 1
+                    soldProducts += decision.productId
+                    accepted += action.copy(snapshot = sellSnapshot)
+                }
+
+                is TradingDecision.Rotate -> {
+                    if (rotateCount >= props.maxRotationsPerRun) { reject(action, "max rotations per run reached"); continue@actionLoop }
+                    if (buyCount >= props.maxBuysPerRun) { reject(action, "max buys per run reached"); continue@actionLoop }
+                    if (sellCount >= props.maxSellsPerRun) { reject(action, "max sells per run reached"); continue@actionLoop }
+                    if (decision.buy.productId in boughtProducts) { reject(action, "already buying ${decision.buy.productId} this run"); continue@actionLoop }
+                    if (decision.sell.productId in soldProducts) { reject(action, "already selling ${decision.sell.productId} this run"); continue@actionLoop }
+
+                    val fundingSnapshot = snapshotsByProduct[decision.sell.productId]
+                    if (fundingSnapshot == null) { reject(action, "missing funding snapshot ${decision.sell.productId}"); continue@actionLoop }
+                    val targetSnapshot = snapshotsByProduct[decision.buy.productId]
+                    if (targetSnapshot == null) { reject(action, "missing target snapshot ${decision.buy.productId}"); continue@actionLoop }
+                    val availableBase = projectedBalances[decision.sell.productId] ?: BigDecimal.ZERO
+                    if (decision.sell.baseSize <= BigDecimal.ZERO || decision.sell.baseSize > availableBase) { reject(action, "rotation sell size exceeds projected available balance"); continue@actionLoop }
+
+                    val fundingNotionalUsd = decision.sell.baseSize.multiply(fundingSnapshot.price)
+                    val projectedUsdAfterRotation = projectedUsd + fundingNotionalUsd - decision.buy.quoteSizeUsd
+                    if (projectedUsdAfterRotation < props.minUsdCashReserve) { reject(action, "rotation would violate min USD cash reserve"); continue@actionLoop }
+                    if (projectedBuyUsd + decision.buy.quoteSizeUsd > props.maxTotalBuyUsdPerRun) { reject(action, "rotation would exceed max total buy USD per run"); continue@actionLoop }
+
+                    projectedBalances[decision.sell.productId] = availableBase - decision.sell.baseSize
+                    projectedUsd = projectedUsdAfterRotation
+                    projectedBuyUsd += decision.buy.quoteSizeUsd
+                    rotateCount += 1
+                    buyCount += 1
+                    sellCount += 1
+                    boughtProducts += decision.buy.productId
+                    soldProducts += decision.sell.productId
+                    accepted += action.copy(snapshot = targetSnapshot)
+                }
+            }
+        }
+
+        return PlanExecutionSelection(executable = accepted, skipped = skipped)
+    }
+
+    private fun buildPlanExecutionReport(
+        snapshots: List<MarketSnapshot>,
+        selection: PlanExecutionSelection,
+    ): PortfolioRunReport {
+        val proposed = selection.executable.map { PlanActionReport.from(it, "EXECUTED", "Submitted to execution pipeline") } + selection.skipped
+        return PortfolioRunReport(
+            createdAt = Instant.now(),
+            dryRun = props.dryRun,
+            liveTradingEnabled = props.liveTradingEnabled,
+            proposedActionCount = proposed.size,
+            executedActionCount = selection.executable.size,
+            skippedActionCount = selection.skipped.size,
+            actions = proposed,
+            portfolioBefore = snapshots.sortedByDescending { it.cryptoValueUsd }.map { snapshot ->
+                PortfolioHoldingReport(
+                    productId = snapshot.productId,
+                    cryptoValueUsd = snapshot.cryptoValueUsd,
+                    allocationPercent = snapshot.portfolioAllocationPercent,
+                    unrealizedPnlUsd = snapshot.unrealizedPnlUsd,
+                    unrealizedPnlPercent = snapshot.unrealizedPnlPercent,
+                )
+            },
+            projectedPortfolio = projectPortfolioAfter(snapshots, selection.executable),
+        )
+    }
+
+    private fun projectPortfolioAfter(
+        snapshots: List<MarketSnapshot>,
+        executableActions: List<ValidatedPlanAction>,
+    ): List<PortfolioHoldingReport> {
+        val byProduct = snapshots.associateBy { it.productId }
+        val projectedBalances = snapshots.associate { it.productId to it.cryptoBalance }.toMutableMap()
+        var projectedUsd = snapshots.firstOrNull()?.usdAvailable ?: BigDecimal.ZERO
+
+        for (action in executableActions) {
+            when (val decision = action.decision) {
+                is TradingDecision.Buy -> {
+                    val snapshot = byProduct[decision.productId] ?: continue
+                    projectedUsd -= decision.quoteSizeUsd
+                    projectedBalances[decision.productId] = (projectedBalances[decision.productId] ?: BigDecimal.ZERO) +
+                        decision.quoteSizeUsd.divide(snapshot.price, 12, RoundingMode.HALF_UP)
+                }
+
+                is TradingDecision.Sell -> {
+                    val snapshot = byProduct[decision.productId] ?: continue
+                    projectedUsd += decision.baseSize.multiply(snapshot.price)
+                    projectedBalances[decision.productId] = (projectedBalances[decision.productId] ?: BigDecimal.ZERO) - decision.baseSize
+                }
+
+                is TradingDecision.Rotate -> {
+                    val fundingSnapshot = byProduct[decision.sell.productId] ?: continue
+                    val targetSnapshot = byProduct[decision.buy.productId] ?: continue
+                    projectedUsd += decision.sell.baseSize.multiply(fundingSnapshot.price)
+                    projectedBalances[decision.sell.productId] = (projectedBalances[decision.sell.productId] ?: BigDecimal.ZERO) - decision.sell.baseSize
+                    projectedUsd -= decision.buy.quoteSizeUsd
+                    projectedBalances[decision.buy.productId] = (projectedBalances[decision.buy.productId] ?: BigDecimal.ZERO) +
+                        decision.buy.quoteSizeUsd.divide(targetSnapshot.price, 12, RoundingMode.HALF_UP)
+                }
+
+                is TradingDecision.Skip -> Unit
+            }
+        }
+
+        val cryptoValues = snapshots.map { snapshot ->
+            val value = (projectedBalances[snapshot.productId] ?: BigDecimal.ZERO).multiply(snapshot.price)
+            snapshot.productId to value
+        }
+        val total = cryptoValues.sumOf { it.second } + projectedUsd
+
+        return cryptoValues
+            .map { (productId, value) ->
+                PortfolioHoldingReport(
+                    productId = productId,
+                    cryptoValueUsd = value,
+                    allocationPercent = if (total > BigDecimal.ZERO) {
+                        value.divide(total, 6, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+                    } else BigDecimal.ZERO,
+                    unrealizedPnlUsd = byProduct[productId]?.unrealizedPnlUsd ?: BigDecimal.ZERO,
+                    unrealizedPnlPercent = byProduct[productId]?.unrealizedPnlPercent ?: BigDecimal.ZERO,
+                )
+            }
+            .sortedByDescending { it.cryptoValueUsd }
+    }
+
+    private fun formatPortfolioExecutionReport(report: PortfolioRunReport): String {
+        val executed = report.actions.filter { it.status == "EXECUTED" }
+        val skipped = report.actions.filter { it.status != "EXECUTED" }
+
+        val executedLines = if (executed.isEmpty()) {
+            "None"
+        } else {
+            executed.joinToString("\n") { "- ${it.action} ${it.productId}: ${it.detail}" }
+        }
+
+        val skippedLines = if (skipped.isEmpty()) {
+            "None"
+        } else {
+            skipped.take(8).joinToString("\n") { "- ${it.action} ${it.productId}: ${it.detail}" }
+        }
+
+        val projectedLines = report.projectedPortfolio
+            .filter { it.cryptoValueUsd > BigDecimal.ZERO }
+            .take(8)
+            .joinToString("\n") { "- ${it.productId}: \$${it.cryptoValueUsd.setScale(2, RoundingMode.HALF_UP)} (${it.allocationPercent.setScale(1, RoundingMode.HALF_UP)}%)" }
+            .ifBlank { "No crypto holdings projected" }
+
+        val mode = if (report.dryRun) "DRY_RUN" else if (report.liveTradingEnabled) "LIVE" else "LIVE_BLOCKED"
+
+        return """
+            📊 Portfolio Execution Report [$mode]
+
+            Proposed: ${report.proposedActionCount}
+            Execution attempts: ${report.executedActionCount}
+            Skipped/rejected: ${report.skippedActionCount}
+
+            EXECUTED / ATTEMPTED:
+            $executedLines
+
+            SKIPPED / REJECTED:
+            $skippedLines
+
+            Projected portfolio after accepted actions:
+            $projectedLines
+        """.trimIndent()
+    }
+
 
     private fun buildSnapshots(): Mono<List<MarketSnapshot>> {
         log.info("Building market snapshots for {}", props.productIds)
@@ -665,4 +931,87 @@ class BotRunner(
         val variance = returns.map { (it - mean) * (it - mean) }.average()
         return BigDecimal(Math.sqrt(variance) * 100).setScale(2, RoundingMode.HALF_UP)
     }
+}
+
+internal data class ValidatedPlanAction(
+    val agentDecision: AgentTradeDecision,
+    val snapshot: MarketSnapshot,
+    val decision: TradingDecision,
+)
+
+private data class PlanExecutionSelection(
+    val executable: List<ValidatedPlanAction>,
+    val skipped: List<PlanActionReport>,
+)
+
+data class PortfolioRunReport(
+    val createdAt: Instant,
+    val dryRun: Boolean,
+    val liveTradingEnabled: Boolean,
+    val proposedActionCount: Int,
+    val executedActionCount: Int,
+    val skippedActionCount: Int,
+    val actions: List<PlanActionReport>,
+    val portfolioBefore: List<PortfolioHoldingReport>,
+    val projectedPortfolio: List<PortfolioHoldingReport>,
+)
+
+data class PlanActionReport(
+    val action: String,
+    val productId: String,
+    val status: String,
+    val detail: String,
+    val score: BigDecimal,
+    val confidence: BigDecimal,
+    val quoteSizeUsd: BigDecimal,
+    val baseSize: BigDecimal,
+    val fundingProductId: String,
+    val fundingBaseSize: BigDecimal,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "action" to action,
+        "productId" to productId,
+        "status" to status,
+        "detail" to detail,
+        "score" to score.toPlainString(),
+        "confidence" to confidence.toPlainString(),
+        "quoteSizeUsd" to quoteSizeUsd.toPlainString(),
+        "baseSize" to baseSize.toPlainString(),
+        "fundingProductId" to fundingProductId,
+        "fundingBaseSize" to fundingBaseSize.toPlainString(),
+    )
+
+    companion object {
+        internal fun from(action: ValidatedPlanAction, status: String, detail: String): PlanActionReport {
+            val agentDecision = action.agentDecision
+            return PlanActionReport(
+                action = agentDecision.action,
+                productId = agentDecision.productId,
+                status = status,
+                detail = detail,
+                score = agentDecision.score,
+                confidence = agentDecision.confidence,
+                quoteSizeUsd = agentDecision.quoteSizeUsd,
+                baseSize = agentDecision.baseSize,
+                fundingProductId = agentDecision.fundingProductId,
+                fundingBaseSize = agentDecision.fundingBaseSize,
+            )
+        }
+    }
+}
+
+data class PortfolioHoldingReport(
+    val productId: String,
+    val cryptoValueUsd: BigDecimal,
+    val allocationPercent: BigDecimal,
+    val unrealizedPnlUsd: BigDecimal,
+    val unrealizedPnlPercent: BigDecimal,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "productId" to productId,
+        "cryptoValueUsd" to cryptoValueUsd.toPlainString(),
+        "allocationPercent" to allocationPercent.toPlainString(),
+        "unrealizedPnlUsd" to unrealizedPnlUsd.toPlainString(),
+        "unrealizedPnlPercent" to unrealizedPnlPercent.toPlainString(),
+    )
 }

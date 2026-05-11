@@ -1,5 +1,6 @@
 package com.example.cryptobot.persistence
 
+import com.example.cryptobot.scheduler.PortfolioRunReport
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.google.cloud.Timestamp
 import com.google.cloud.firestore.Firestore
@@ -70,6 +71,34 @@ class TradeLedgerClient(
 
             decisions.add(doc).get()
             log.info("Recorded trade ledger entry: decisionType={} product={}", decisionType, snapshot.productId)
+            null
+        }
+            .subscribeOn(Schedulers.boundedElastic())
+            .then()
+    }
+
+
+    fun recordPortfolioRun(report: PortfolioRunReport): Mono<Void> {
+        return Mono.fromCallable {
+            val doc = mapOf(
+                "createdAt" to Timestamp.ofTimeSecondsAndNanos(report.createdAt.epochSecond, report.createdAt.nano),
+                "dryRun" to report.dryRun,
+                "liveTradingEnabled" to report.liveTradingEnabled,
+                "proposedActionCount" to report.proposedActionCount,
+                "executedActionCount" to report.executedActionCount,
+                "skippedActionCount" to report.skippedActionCount,
+                "actions" to report.actions.map { it.asMap() },
+                "portfolioBefore" to report.portfolioBefore.map { it.asMap() },
+                "projectedPortfolio" to report.projectedPortfolio.map { it.asMap() },
+            )
+
+            firestore.collection("portfolio_runs").add(doc).get()
+            log.info(
+                "Recorded portfolio run: proposed={} executed={} skipped={}",
+                report.proposedActionCount,
+                report.executedActionCount,
+                report.skippedActionCount,
+            )
             null
         }
             .subscribeOn(Schedulers.boundedElastic())

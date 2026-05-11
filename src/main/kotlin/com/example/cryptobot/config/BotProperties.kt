@@ -32,6 +32,11 @@ data class BotProperties(
     val minRotationScoreGap: BigDecimal = BigDecimal("15"),
     val maxRotationSellPercent: BigDecimal = BigDecimal("35.0"),
     val minRotationNotionalUsd: BigDecimal = BigDecimal("10.00"),
+    val maxActionsPerRun: Int = 3,
+    val maxBuysPerRun: Int = 2,
+    val maxSellsPerRun: Int = 2,
+    val maxRotationsPerRun: Int = 1,
+    val maxTotalBuyUsdPerRun: BigDecimal = BigDecimal("25.00"),
 )
 
 @ConfigurationProperties(prefix = "coinbase")
