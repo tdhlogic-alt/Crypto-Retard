@@ -16,7 +16,7 @@ management:
 
 bot:
   enabled: true
-  dry-run: true
+  dry-run: false
   fixed-rate-ms: 900000
   exit-on-completion: ${BOT_EXIT_ON_COMPLETION:true}
 
