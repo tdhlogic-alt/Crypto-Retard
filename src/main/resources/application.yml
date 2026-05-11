@@ -18,6 +18,7 @@ bot:
   enabled: true
   dry-run: true
   fixed-rate-ms: 900000
+  exit-on-completion: ${BOT_EXIT_ON_COMPLETION:true}
 
   product-ids:
     - BTC-USD
