@@ -12,6 +12,9 @@ import com.example.cryptobot.strategy.SimpleDipBuyStrategy
 import com.example.cryptobot.strategy.TradingDecision
 import org.slf4j.LoggerFactory
 import org.springframework.boot.CommandLineRunner
+import org.springframework.boot.ExitCodeGenerator
+import org.springframework.boot.SpringApplication
+import org.springframework.context.ConfigurableApplicationContext
 import org.springframework.stereotype.Component
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
@@ -21,6 +24,7 @@ import java.math.RoundingMode
 import java.time.Duration
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import kotlin.system.exitProcess
 
 @Component
 class BotRunner(
@@ -31,74 +35,91 @@ class BotRunner(
     private val ledger: TradeLedgerClient,
     private val agentClient: OpenAiAgentClient,
     private val agentValidator: AgentDecisionValidator,
+    private val applicationContext: ConfigurableApplicationContext,
 ) : CommandLineRunner {
     private val log = LoggerFactory.getLogger(javaClass)
 
     override fun run(vararg args: String) {
-        if (!props.enabled) {
-            log.info("Bot disabled.")
-            return
-        }
+        var exitCode = 0
 
-        buildSnapshots()
-            .flatMap { snapshots ->
-                if (props.agentEnabled) {
-                    agentClient.decidePortfolioPlan(snapshots)
-                        .flatMap { agentPlan ->
-                            val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
-                            decisions.forEachIndexed { index, agentDecision ->
-                                log.info(
-                                    "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
-                                    index + 1,
-                                    agentDecision.productId,
-                                    agentDecision.action,
-                                    agentDecision.score,
-                                    agentDecision.confidence,
-                                    agentDecision.fundingProductId,
-                                    agentDecision.reason
-                                )
+        try {
+            if (!props.enabled) {
+                log.info("Bot disabled.")
+                return
+            }
+
+            buildSnapshots()
+                .flatMap { snapshots ->
+                    if (props.agentEnabled) {
+                        agentClient.decidePortfolioPlan(snapshots)
+                            .flatMap { agentPlan ->
+                                val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
+                                decisions.forEachIndexed { index, agentDecision ->
+                                    log.info(
+                                        "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
+                                        index + 1,
+                                        agentDecision.productId,
+                                        agentDecision.action,
+                                        agentDecision.score,
+                                        agentDecision.confidence,
+                                        agentDecision.fundingProductId,
+                                        agentDecision.reason
+                                    )
+                                }
+
+                                executeAgentPlan(snapshots, decisions)
                             }
-
-                            executeAgentPlan(snapshots, decisions)
-                        }
-                } else {
-                    Flux.fromIterable(snapshots)
-                        .flatMap { snapshot ->
-                            val decision = strategy.decide(snapshot)
-                            execute(snapshot, decision)
-                        }
-                        .then()
+                    } else {
+                        Flux.fromIterable(snapshots)
+                            .flatMap { snapshot ->
+                                val decision = strategy.decide(snapshot)
+                                execute(snapshot, decision)
+                            }
+                            .then()
+                    }
                 }
-            }
-            .retryWhen(
-                Retry.backoff(2, Duration.ofSeconds(3))
-                    .maxBackoff(Duration.ofSeconds(15))
-                    .jitter(0.25)
-                    .filter { ex ->
-                        ex is java.util.concurrent.TimeoutException ||
-                                ex is java.net.ConnectException ||
-                                ex is java.nio.channels.ClosedChannelException ||
-                                ex is javax.net.ssl.SSLException ||
-                                ex is org.springframework.web.reactive.function.client.WebClientRequestException ||
-                                ex is IllegalStateException && ex.message?.contains("response body has been released") == true
-                    }
-                    .doBeforeRetry { signal ->
-                        log.warn(
-                            "Retrying bot tick. attempt={} error={}",
-                            signal.totalRetries() + 1,
-                            signal.failure().message
-                        )
-                    }
-            )
-            .doOnSubscribe { log.info("Bot tick started") }
-            .doOnSuccess { log.info("Bot tick completed") }
-            .doOnError { ex ->
-                log.error("Bot tick failed", ex)
-                alerts.send("🚨 Crypto bot failed: `${ex.message ?: ex::class.simpleName}`").block()
-            }
-            .block()
+                .retryWhen(
+                    Retry.backoff(2, Duration.ofSeconds(3))
+                        .maxBackoff(Duration.ofSeconds(15))
+                        .jitter(0.25)
+                        .filter { ex ->
+                            ex is java.util.concurrent.TimeoutException ||
+                                    ex is java.net.ConnectException ||
+                                    ex is java.nio.channels.ClosedChannelException ||
+                                    ex is javax.net.ssl.SSLException ||
+                                    ex is org.springframework.web.reactive.function.client.WebClientRequestException ||
+                                    ex is IllegalStateException && ex.message?.contains("response body has been released") == true
+                        }
+                        .doBeforeRetry { signal ->
+                            log.warn(
+                                "Retrying bot tick. attempt={} error={}",
+                                signal.totalRetries() + 1,
+                                signal.failure().message
+                            )
+                        }
+                )
+                .doOnSubscribe { log.info("Bot tick started") }
+                .doOnSuccess { log.info("Bot tick completed") }
+                .doOnError { ex ->
+                    log.error("Bot tick failed", ex)
+                    alerts.send("🚨 Crypto bot failed: `${ex.message ?: ex::class.simpleName}`").block()
+                }
+                .block()
 
-        log.info("Bot job finished successfully")
+            log.info("Bot job finished successfully")
+        } catch (ex: Throwable) {
+            exitCode = 1
+            throw ex
+        } finally {
+            if (props.exitOnCompletion) {
+                log.info("Exiting application after bot run with code {}", exitCode)
+                val springExitCode = SpringApplication.exit(
+                    applicationContext,
+                    { exitCode }
+                )
+                exitProcess(springExitCode)
+            }
+        }
     }
 
     private fun formatAgentPlanAlert(decisions: List<AgentTradeDecision>): String {
