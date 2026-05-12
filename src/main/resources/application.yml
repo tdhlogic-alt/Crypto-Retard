@@ -34,11 +34,11 @@ bot:
     - ONDO-USD
     - SHIB-USD
 
-  buy-quote-size-usd: "50.00"
-  min-usd-cash-reserve: "5.00"
-  max-single-buy-usd: "75.00"
-  max-daily-buy-usd: "900.00"
-  dip-threshold-percent: "4.0"
+  buy-quote-size-usd: ${BOT_BUY_QUOTE_SIZE_USD:50.00}
+  min-usd-cash-reserve: ${BOT_MIN_USD_CASH_RESERVE:5.00}
+  max-single-buy-usd: ${BOT_MAX_SINGLE_BUY_USD:75.00}
+  max-daily-buy-usd: ${BOT_MAX_DAILY_BUY_USD:900.00}
+  dip-threshold-percent: ${BOT_DIP_THRESHOLD_PERCENT:4.0}
 
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
