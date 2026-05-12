@@ -12,7 +12,6 @@ data class BotProperties(
     val buyQuoteSizeUsd: BigDecimal = BigDecimal("25.00"),
     val minUsdCashReserve: BigDecimal = BigDecimal("500.00"),
     val maxSingleBuyUsd: BigDecimal = BigDecimal("50.00"),
-    val maxDailyBuyUsd: BigDecimal = BigDecimal("100.00"),
     val dipThresholdPercent: BigDecimal = BigDecimal("5.0"),
     val discordWebhookUrl: String = "",
     val maxBuyQuoteSizeUsd: BigDecimal = BigDecimal("10.00"),

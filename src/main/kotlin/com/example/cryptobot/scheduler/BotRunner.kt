@@ -753,23 +753,6 @@ class BotRunner(
                             } else {
                                 ledger.liveBuyTotalSince(todaySince)
                                     .flatMap { spentToday ->
-                                        val projectedSpend = spentToday + decision.quoteSizeUsd
-
-                                        if (projectedSpend > props.maxDailyBuyUsd) {
-                                            val message =
-                                                "🛑 LIVE TRADE BLOCKED: daily buy limit exceeded. spentToday=$spentToday projected=$projectedSpend max=${props.maxDailyBuyUsd}"
-                                            log.warn(message)
-
-                                            ledger.record(
-                                                snapshot = snapshot,
-                                                decisionType = "BLOCKED_BUY",
-                                                reason = message,
-                                                dryRun = false,
-                                                quoteSizeUsd = decision.quoteSizeUsd,
-                                            )
-                                                .then(alerts.send(message))
-                                                .thenReturn(Unit)
-                                        } else {
                                             val message =
                                                 "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                                             log.warn(message)
@@ -812,7 +795,7 @@ class BotRunner(
                                                     )
                                                 }
                                                 .thenReturn(Unit)
-                                        }
+
                                     }
                             }
                         }
