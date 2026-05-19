@@ -399,6 +399,22 @@ class TradeLedgerClient(
                 .fold(BigDecimal.ZERO) { acc, value -> acc + value.toBigDecimal() }
         }.subscribeOn(Schedulers.boundedElastic())
     }
+
+    fun liveTradeCountSince(since: Instant): Mono<Int> {
+        return Mono.fromCallable {
+            val snapshot = decisions
+                .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
+                .get()
+                .get()
+
+            snapshot.documents.count { doc ->
+                val decisionType = doc.getString("decisionType")
+                decisionType in setOf("BUY", "SELL") &&
+                    doc.getBoolean("dryRun") == false &&
+                    doc.getBoolean("coinbaseSuccess") == true
+            }
+        }.subscribeOn(Schedulers.boundedElastic())
+    }
 }
 
 data class PositionSnapshot(

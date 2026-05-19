@@ -34,40 +34,40 @@ bot:
     - ONDO-USD
     - SHIB-USD
 
-  buy-quote-size-usd: ${BOT_BUY_QUOTE_SIZE_USD:50.00}
-  min-usd-cash-reserve: ${BOT_MIN_USD_CASH_RESERVE:5.00}
+  buy-quote-size-usd: ${BOT_BUY_QUOTE_SIZE_USD:25.00}
+  min-usd-cash-reserve: ${BOT_MIN_USD_CASH_RESERVE:250.00}
   max-single-buy-usd: ${BOT_MAX_SINGLE_BUY_USD:75.00}
   dip-threshold-percent: ${BOT_DIP_THRESHOLD_PERCENT:4.0}
 
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
-  max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:75.00}
+  max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:25.00}
   live-trading-enabled: ${BOT_LIVE_TRADING_ENABLED:true}
 
   agent-enabled: ${BOT_AGENT_ENABLED:true}
-  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.70}
+  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.78}
   max-asset-allocation-percent: ${BOT_MAX_ASSET_ALLOCATION_PERCENT:45.0}
   min-profit-percent-for-ai-sell: ${BOT_MIN_PROFIT_PERCENT_FOR_AI_SELL:3.0}
   max-drawdown-from-high-percent: ${BOT_MAX_DRAWDOWN_FROM_HIGH_PERCENT:10.0}
-  min-agent-edge-score: ${BOT_MIN_AGENT_EDGE_SCORE:55}
-  strong-agent-edge-score: ${BOT_STRONG_AGENT_EDGE_SCORE:75}
+  min-agent-edge-score: ${BOT_MIN_AGENT_EDGE_SCORE:75}
+  strong-agent-edge-score: ${BOT_STRONG_AGENT_EDGE_SCORE:85}
   allow-ai-sell-at-loss: ${BOT_ALLOW_AI_SELL_AT_LOSS:true}
   ai-sell-loss-floor-percent: ${BOT_AI_SELL_LOSS_FLOOR_PERCENT:-6.0}
   max-ai-reason-length: ${BOT_MAX_AI_REASON_LENGTH:240}
 
   # Level 2 portfolio rotation: allows the agent to sell a weak held asset to fund a stronger BUY.
-  level2-rotation-enabled: ${BOT_LEVEL2_ROTATION_ENABLED:true}
+  level2-rotation-enabled: ${BOT_LEVEL2_ROTATION_ENABLED:false}
   min-rotation-edge-score: ${BOT_MIN_ROTATION_EDGE_SCORE:80}
   min-rotation-score-gap: ${BOT_MIN_ROTATION_SCORE_GAP:15}
   max-rotation-sell-percent: ${BOT_MAX_ROTATION_SELL_PERCENT:75.0}
   min-rotation-notional-usd: ${BOT_MIN_ROTATION_NOTIONAL_USD:10.00}
 
   # Multi-action execution: allows more than one validated action per scheduled run.
-  max-actions-per-run: ${BOT_MAX_ACTIONS_PER_RUN:8}
-  max-buys-per-run: ${BOT_MAX_BUYS_PER_RUN:8}
-  max-sells-per-run: ${BOT_MAX_SELLS_PER_RUN:5}
-  max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:5}
-  max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:300.00}
+  max-actions-per-run: ${BOT_MAX_ACTIONS_PER_RUN:2}
+  max-buys-per-run: ${BOT_MAX_BUYS_PER_RUN:1}
+  max-sells-per-run: ${BOT_MAX_SELLS_PER_RUN:1}
+  max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:0}
+  max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:50.00}
 
 openai:
   api-key: ${OPENAI_API_KEY:}
