@@ -78,6 +78,14 @@ class OpenAiAgentClient(
             maxRotationSellPct=${botProps.maxRotationSellPercent}
             minRotationNotionalUsd=${botProps.minRotationNotionalUsd}
 
+            Capital preservation mode:
+            - The account is recovering from live-trading drawdown. Prioritize avoiding additional downside over catching upside.
+            - If maxBuysPerRun is 0 or maxTotalBuyUsdPerRun is 0, do not propose BUY or ROTATE actions. Return only meaningful SELL actions or SKIP.
+            - Do not propose a BUY in CRASH. Do not propose a BUY in BEAR_TREND unless score >= ${botProps.bearTrendMinBuyScore}.
+            - Do not propose OVERSOLD_BOUNCE unless RSI <= ${botProps.oversoldBounceMaxRsi} and both 1h/4h trends are recovering above ${botProps.oversoldBounceMinRecoveryTrendPercent}%.
+            - Avoid tiny partial exits. SELL notional should be >= ${botProps.minSellNotionalUsd} unless selling the entire remaining dust position.
+            - Prefer SKIP over low-conviction trades. It is acceptable and often correct to return no executable trades.
+
             Multi-action planning rules:
             - Return only actions worth executing in this scheduled run. Do not fill the plan just because slots exist.
             - Rank actions from most urgent/highest edge to lowest edge.
@@ -118,8 +126,15 @@ class OpenAiAgentClient(
             Evaluate this single asset and recommend BUY, SELL, or SKIP.
             Consider momentum, volatility, RSI14, proximity to highs/lows, risk/reward, current position, P&L, thesis, and allocation.
             Do not recommend SELL for assets with zero balance. Prefer partial exits for SELL.
+            Capital preservation mode rules:
+            - If maxBuysPerRun is 0 or maxTotalBuyUsdPerRun is 0, do not recommend BUY. Recommend SELL only for real risk reduction, otherwise SKIP.
+            - Never recommend BUY in CRASH. In BEAR_TREND, BUY requires score >= ${botProps.bearTrendMinBuyScore}.
+            - OVERSOLD_BOUNCE requires RSI <= ${botProps.oversoldBounceMaxRsi} and both 1h/4h trends recovering above ${botProps.oversoldBounceMinRecoveryTrendPercent}%.
+            - Avoid tiny SELLs below minSellNotionalUsd=${botProps.minSellNotionalUsd} unless exiting dust.
             Existing configured buy size: ${botProps.buyQuoteSizeUsd}
             Max buy size allowed: ${botProps.maxBuyQuoteSizeUsd}
+            maxBuysPerRun=${botProps.maxBuysPerRun}
+            maxTotalBuyUsdPerRun=${botProps.maxTotalBuyUsdPerRun}
             Keep reason <= ${botProps.maxAiReasonLength} characters.
 
             Market snapshot:
