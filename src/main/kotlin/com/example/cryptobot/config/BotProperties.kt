@@ -36,6 +36,12 @@ data class BotProperties(
     val maxSellsPerRun: Int = 2,
     val maxRotationsPerRun: Int = 1,
     val maxTotalBuyUsdPerRun: BigDecimal = BigDecimal("25.00"),
+    val buyCooldownHours: Long = 12,
+    val maxDailyLiveTrades: Int = 10,
+    val bearTrendMinBuyScore: BigDecimal = BigDecimal("90"),
+    val oversoldBounceMaxRsi: BigDecimal = BigDecimal("35"),
+    val oversoldBounceMinRecoveryTrendPercent: BigDecimal = BigDecimal("0.0"),
+    val minSellNotionalUsd: BigDecimal = BigDecimal("10.00"),
     val exitOnCompletion: Boolean = true,
 )
 

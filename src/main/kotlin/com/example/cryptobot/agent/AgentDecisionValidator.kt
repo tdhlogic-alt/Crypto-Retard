@@ -50,6 +50,10 @@ class AgentDecisionValidator(
             decision.quoteSizeUsd > props.maxBuyQuoteSizeUsd -> TradingDecision.Skip("Agent quote size exceeds max: ${decision.quoteSizeUsd} > ${props.maxBuyQuoteSizeUsd}")
             snapshot.usdAvailable - decision.quoteSizeUsd < props.minUsdCashReserve -> TradingDecision.Skip("Agent BUY rejected: USD reserve would fall below minimum")
             snapshot.portfolioAllocationPercent >= props.maxAssetAllocationPercent -> TradingDecision.Skip("Agent BUY rejected: allocation ${snapshot.portfolioAllocationPercent}% already >= max ${props.maxAssetAllocationPercent}%")
+            snapshot.marketRegime == "CRASH" -> TradingDecision.Skip("Agent BUY rejected: market regime is CRASH")
+            snapshot.marketRegime == "BEAR_TREND" && decision.score < props.bearTrendMinBuyScore -> TradingDecision.Skip("Agent BUY rejected: BEAR_TREND requires score >= ${props.bearTrendMinBuyScore}; score=${decision.score}")
+            decision.reasonCode == "OVERSOLD_BOUNCE" && snapshot.rsi14 > props.oversoldBounceMaxRsi -> TradingDecision.Skip("Agent BUY rejected: OVERSOLD_BOUNCE requires RSI <= ${props.oversoldBounceMaxRsi}; rsi=${snapshot.rsi14}")
+            decision.reasonCode == "OVERSOLD_BOUNCE" && (snapshot.trend1hPercent <= props.oversoldBounceMinRecoveryTrendPercent || snapshot.trend4hPercent <= props.oversoldBounceMinRecoveryTrendPercent) -> TradingDecision.Skip("Agent BUY rejected: OVERSOLD_BOUNCE requires 1h and 4h recovery trends > ${props.oversoldBounceMinRecoveryTrendPercent}; 1h=${snapshot.trend1hPercent}% 4h=${snapshot.trend4hPercent}%")
             else -> TradingDecision.Buy(
                 productId = decision.productId,
                 quoteSizeUsd = decision.quoteSizeUsd,
@@ -68,9 +72,13 @@ class AgentDecisionValidator(
         if (decision.baseSize > snapshot.cryptoBalance) {
             return TradingDecision.Skip("Agent sell size exceeds available balance: ${decision.baseSize} > ${snapshot.cryptoBalance}")
         }
+        val sellNotionalUsd = decision.baseSize.multiply(snapshot.price)
+        val fullPositionNotionalUsd = snapshot.cryptoBalance.multiply(snapshot.price)
+
         return when {
             decision.baseSize <= BigDecimal.ZERO -> TradingDecision.Skip("Agent sell size invalid: ${decision.baseSize}")
             snapshot.cryptoBalance <= BigDecimal.ZERO -> TradingDecision.Skip("Agent SELL rejected: no available balance")
+            sellNotionalUsd < props.minSellNotionalUsd && fullPositionNotionalUsd >= props.minSellNotionalUsd -> TradingDecision.Skip("Agent SELL rejected: sell notional $sellNotionalUsd is below min ${props.minSellNotionalUsd}")
             !props.allowAiSellAtLoss &&
                     snapshot.unrealizedPnlPercent < BigDecimal.ZERO &&
                     snapshot.unrealizedPnlPercent > props.aiSellLossFloorPercent &&

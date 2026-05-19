@@ -732,13 +732,13 @@ class BotRunner(
                 }
 
                 else -> {
-                    val recentSince = Instant.now().minus(30, ChronoUnit.MINUTES)
+                    val recentSince = Instant.now().minus(props.buyCooldownHours, ChronoUnit.HOURS)
                     val todaySince = Instant.now().truncatedTo(ChronoUnit.DAYS)
 
                     ledger.hasRecentLiveBuy(decision.productId, recentSince)
                         .flatMap { hasRecentBuy ->
                             if (hasRecentBuy) {
-                                val message = "🛑 LIVE TRADE BLOCKED: recent live BUY already exists for ${decision.productId}"
+                                val message = "🛑 LIVE TRADE BLOCKED: ${decision.productId} is in ${props.buyCooldownHours}h buy cooldown"
                                 log.warn(message)
 
                                 ledger.record(
@@ -751,8 +751,22 @@ class BotRunner(
                                     .then(alerts.send(message))
                                     .thenReturn(Unit)
                             } else {
-                                ledger.liveBuyTotalSince(todaySince)
-                                    .flatMap { spentToday ->
+                                ledger.liveTradeCountSince(todaySince)
+                                    .flatMap { tradeCountToday ->
+                                        if (tradeCountToday >= props.maxDailyLiveTrades) {
+                                            val message = "🛑 LIVE TRADE BLOCKED: daily live trade count limit reached. tradesToday=$tradeCountToday max=${props.maxDailyLiveTrades}"
+                                            log.warn(message)
+
+                                            ledger.record(
+                                                snapshot = snapshot,
+                                                decisionType = "BLOCKED_BUY",
+                                                reason = message,
+                                                dryRun = false,
+                                                quoteSizeUsd = decision.quoteSizeUsd,
+                                            )
+                                                .then(alerts.send(message))
+                                                .thenReturn(Unit)
+                                        } else {
                                             val message =
                                                 "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
                                             log.warn(message)
@@ -795,7 +809,7 @@ class BotRunner(
                                                     )
                                                 }
                                                 .thenReturn(Unit)
-
+                                        }
                                     }
                             }
                         }
@@ -851,26 +865,65 @@ class BotRunner(
                 }
 
                 else -> {
-                    val message = "🚨 LIVE TRADE: SELL ${decision.baseSize} of ${decision.productId}. Reason: ${decision.reason}"
-                    log.warn(message)
+                    val todaySince = Instant.now().truncatedTo(ChronoUnit.DAYS)
+                    val sellNotionalUsd = decision.baseSize.multiply(snapshot.price)
+                    val fullPositionNotionalUsd = snapshot.cryptoBalance.multiply(snapshot.price)
 
-                    alerts.send(message)
-                        .then(coinbaseClient.createMarketSell(decision.productId, decision.baseSize))
-                        .flatMap { response ->
+                    when {
+                        sellNotionalUsd < props.minSellNotionalUsd && fullPositionNotionalUsd >= props.minSellNotionalUsd -> {
+                            val message = "🛑 LIVE SELL BLOCKED: sell notional $sellNotionalUsd is below min=${props.minSellNotionalUsd}"
+                            log.warn(message)
+
                             ledger.record(
                                 snapshot = snapshot,
-                                decisionType = "SELL",
-                                reason = decision.reason,
+                                decisionType = "BLOCKED_SELL",
+                                reason = message,
                                 dryRun = false,
                                 baseSize = decision.baseSize,
-                                coinbaseSuccess = response.success,
-                                reasonCode = decision.reasonCode,
-                                errorMessage = response.errorResponse?.toString(),
-                            ).then(
-                                if (response.success) ledger.applyLiveSell(snapshot, decision.baseSize, decision.reasonCode) else Mono.empty()
                             )
+                                .then(alerts.send(message))
+                                .thenReturn(Unit)
                         }
-                        .thenReturn(Unit)
+
+                        else -> ledger.liveTradeCountSince(todaySince)
+                            .flatMap { tradeCountToday ->
+                                if (tradeCountToday >= props.maxDailyLiveTrades) {
+                                    val message = "🛑 LIVE SELL BLOCKED: daily live trade count limit reached. tradesToday=$tradeCountToday max=${props.maxDailyLiveTrades}"
+                                    log.warn(message)
+
+                                    ledger.record(
+                                        snapshot = snapshot,
+                                        decisionType = "BLOCKED_SELL",
+                                        reason = message,
+                                        dryRun = false,
+                                        baseSize = decision.baseSize,
+                                    )
+                                        .then(alerts.send(message))
+                                        .thenReturn(Unit)
+                                } else {
+                                    val message = "🚨 LIVE TRADE: SELL ${decision.baseSize} of ${decision.productId}. Reason: ${decision.reason}"
+                                    log.warn(message)
+
+                                    alerts.send(message)
+                                        .then(coinbaseClient.createMarketSell(decision.productId, decision.baseSize))
+                                        .flatMap { response ->
+                                            ledger.record(
+                                                snapshot = snapshot,
+                                                decisionType = "SELL",
+                                                reason = decision.reason,
+                                                dryRun = false,
+                                                baseSize = decision.baseSize,
+                                                coinbaseSuccess = response.success,
+                                                reasonCode = decision.reasonCode,
+                                                errorMessage = response.errorResponse?.toString(),
+                                            ).then(
+                                                if (response.success) ledger.applyLiveSell(snapshot, decision.baseSize, decision.reasonCode) else Mono.empty()
+                                            )
+                                        }
+                                        .thenReturn(Unit)
+                                }
+                            }
+                    }
                 }
             }
         }
