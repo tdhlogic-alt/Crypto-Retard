@@ -400,7 +400,7 @@ class TradeLedgerClient(
         }.subscribeOn(Schedulers.boundedElastic())
     }
 
-    fun liveTradeCountSince(since: Instant): Mono<Int> {
+    fun liveBuyCountSince(since: Instant): Mono<Int> {
         return Mono.fromCallable {
             val snapshot = decisions
                 .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
@@ -409,7 +409,7 @@ class TradeLedgerClient(
 
             snapshot.documents.count { doc ->
                 val decisionType = doc.getString("decisionType")
-                decisionType in setOf("BUY", "SELL") &&
+                decisionType in setOf("BUY", "ROTATE_BUY") &&
                     doc.getBoolean("dryRun") == false &&
                     doc.getBoolean("coinbaseSuccess") == true
             }
