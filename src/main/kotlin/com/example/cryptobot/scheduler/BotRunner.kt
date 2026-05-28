@@ -6,6 +6,7 @@ import com.example.cryptobot.agent.OpenAiAgentClient
 import com.example.cryptobot.alerts.DiscordAlertClient
 import com.example.cryptobot.coinbase.CoinbaseClient
 import com.example.cryptobot.config.BotProperties
+import com.example.cryptobot.config.CoinbaseProperties
 import com.example.cryptobot.persistence.TradeLedgerClient
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.SimpleDipBuyStrategy
@@ -30,6 +31,7 @@ import kotlin.system.exitProcess
 class BotRunner(
     private val props: BotProperties,
     private val coinbaseClient: CoinbaseClient,
+    private val coinbaseProps: CoinbaseProperties,
     private val strategy: SimpleDipBuyStrategy,
     private val alerts: DiscordAlertClient,
     private val ledger: TradeLedgerClient,
@@ -413,7 +415,7 @@ class BotRunner(
                     .sumOf { it.availableBalance.decimal() }
 
                 Flux.fromIterable(props.productIds)
-                    .flatMap { productId ->
+                    .flatMap({ productId ->
                         val now = Instant.now()
                         val start = now.minus(7, ChronoUnit.DAYS)
 
@@ -526,7 +528,7 @@ class BotRunner(
                                     }
                                 }
                             }
-                    }
+                    }, coinbaseProps.snapshotConcurrency.coerceAtLeast(1))
                     .collectList()
                     .map { pairs ->
                         val snapshots = pairs.map { it.second }

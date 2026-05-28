@@ -17,6 +17,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("io.github.resilience4j:resilience4j-spring-boot3:2.1.0")
     implementation("io.github.resilience4j:resilience4j-circuitbreaker:2.1.0")
+    implementation("io.github.resilience4j:resilience4j-ratelimiter:2.1.0")
     implementation("io.github.resilience4j:resilience4j-reactor:2.1.0")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
