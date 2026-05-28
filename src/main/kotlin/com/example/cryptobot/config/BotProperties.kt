@@ -2,6 +2,7 @@ package com.example.cryptobot.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.math.BigDecimal
+import java.time.Duration
 
 @ConfigurationProperties(prefix = "bot")
 data class BotProperties(
@@ -50,6 +51,14 @@ data class CoinbaseProperties(
     val baseUrl: String = "https://api.coinbase.com",
     val apiKeyName: String = "",
     val privateKeyPem: String = "",
+    val productCacheTtl: Duration = Duration.ofSeconds(45),
+    val rateLimitForPeriod: Int = 6,
+    val rateLimitRefreshPeriod: Duration = Duration.ofSeconds(1),
+    val rateLimitTimeout: Duration = Duration.ofSeconds(5),
+    val retryMaxAttempts: Long = 3,
+    val retryInitialBackoff: Duration = Duration.ofSeconds(2),
+    val retryMaxBackoff: Duration = Duration.ofSeconds(20),
+    val snapshotConcurrency: Int = 3,
 )
 
 @ConfigurationProperties(prefix = "openai")

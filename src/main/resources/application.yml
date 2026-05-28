@@ -113,3 +113,13 @@ coinbase:
   base-url: https://api.coinbase.com
   api-key-name: ${COINBASE_API_KEY_NAME:}
   private-key-pem: ${COINBASE_PRIVATE_KEY_PEM:}
+
+  # Coinbase API protection. Keeps the expanded product universe from creating request bursts.
+  product-cache-ttl: ${COINBASE_PRODUCT_CACHE_TTL:45s}
+  rate-limit-for-period: ${COINBASE_RATE_LIMIT_FOR_PERIOD:6}
+  rate-limit-refresh-period: ${COINBASE_RATE_LIMIT_REFRESH_PERIOD:1s}
+  rate-limit-timeout: ${COINBASE_RATE_LIMIT_TIMEOUT:5s}
+  retry-max-attempts: ${COINBASE_RETRY_MAX_ATTEMPTS:3}
+  retry-initial-backoff: ${COINBASE_RETRY_INITIAL_BACKOFF:2s}
+  retry-max-backoff: ${COINBASE_RETRY_MAX_BACKOFF:20s}
+  snapshot-concurrency: ${COINBASE_SNAPSHOT_CONCURRENCY:3}
