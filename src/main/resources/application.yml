@@ -20,6 +20,7 @@ bot:
   fixed-rate-ms: 900000
   exit-on-completion: ${BOT_EXIT_ON_COMPLETION:true}
 
+  # Controlled active universe: broader than the preservation list, but still avoids ultra-illiquid/meme-only churn.
   product-ids:
     - BTC-USD
     - ETH-USD
@@ -29,28 +30,38 @@ bot:
     - SUI-USD
     - ADA-USD
     - XRP-USD
-    - RNDR-USD
     - NEAR-USD
+    - RNDR-USD
     - ONDO-USD
-    - SHIB-USD
+    - DOGE-USD
+    - LTC-USD
+    - BCH-USD
+    - DOT-USD
+    - UNI-USD
+    - AAVE-USD
+    - INJ-USD
+    - ARB-USD
+    - OP-USD
+    - SEI-USD
+    - ATOM-USD
 
-  buy-quote-size-usd: ${BOT_BUY_QUOTE_SIZE_USD:15.00}
-  min-usd-cash-reserve: ${BOT_MIN_USD_CASH_RESERVE:250.00}
+  buy-quote-size-usd: ${BOT_BUY_QUOTE_SIZE_USD:25.00}
+  min-usd-cash-reserve: ${BOT_MIN_USD_CASH_RESERVE:200.00}
   max-single-buy-usd: ${BOT_MAX_SINGLE_BUY_USD:75.00}
   dip-threshold-percent: ${BOT_DIP_THRESHOLD_PERCENT:4.0}
 
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
-  max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:15.00}
+  max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:25.00}
   live-trading-enabled: ${BOT_LIVE_TRADING_ENABLED:true}
 
   agent-enabled: ${BOT_AGENT_ENABLED:true}
-  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.78}
+  agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.72}
   max-asset-allocation-percent: ${BOT_MAX_ASSET_ALLOCATION_PERCENT:45.0}
   min-profit-percent-for-ai-sell: ${BOT_MIN_PROFIT_PERCENT_FOR_AI_SELL:3.0}
   max-drawdown-from-high-percent: ${BOT_MAX_DRAWDOWN_FROM_HIGH_PERCENT:10.0}
-  min-agent-edge-score: ${BOT_MIN_AGENT_EDGE_SCORE:75}
-  strong-agent-edge-score: ${BOT_STRONG_AGENT_EDGE_SCORE:85}
+  min-agent-edge-score: ${BOT_MIN_AGENT_EDGE_SCORE:68}
+  strong-agent-edge-score: ${BOT_STRONG_AGENT_EDGE_SCORE:82}
   allow-ai-sell-at-loss: ${BOT_ALLOW_AI_SELL_AT_LOSS:true}
   ai-sell-loss-floor-percent: ${BOT_AI_SELL_LOSS_FLOOR_PERCENT:-6.0}
   max-ai-reason-length: ${BOT_MAX_AI_REASON_LENGTH:240}
@@ -63,15 +74,15 @@ bot:
   min-rotation-notional-usd: ${BOT_MIN_ROTATION_NOTIONAL_USD:10.00}
 
   # Multi-action execution: allows more than one validated action per scheduled run.
-  max-actions-per-run: ${BOT_MAX_ACTIONS_PER_RUN:1}
+  max-actions-per-run: ${BOT_MAX_ACTIONS_PER_RUN:2}
   max-buys-per-run: ${BOT_MAX_BUYS_PER_RUN:1}
   max-sells-per-run: ${BOT_MAX_SELLS_PER_RUN:1}
   max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:0}
-  max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:15.00}
+  max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:25.00}
 
   # Capital preservation guardrails. Defaults are intentionally defensive while recovering from drawdown.
-  buy-cooldown-hours: ${BOT_BUY_COOLDOWN_HOURS:12}
-  max-daily-live-trades: ${BOT_MAX_DAILY_LIVE_TRADES:3}
+  buy-cooldown-hours: ${BOT_BUY_COOLDOWN_HOURS:6}
+  max-daily-live-trades: ${BOT_MAX_DAILY_LIVE_TRADES:5}
   bear-trend-min-buy-score: ${BOT_BEAR_TREND_MIN_BUY_SCORE:90}
   oversold-bounce-max-rsi: ${BOT_OVERSOLD_BOUNCE_MAX_RSI:35}
   oversold-bounce-min-recovery-trend-percent: ${BOT_OVERSOLD_BOUNCE_MIN_RECOVERY_TREND_PERCENT:0.0}

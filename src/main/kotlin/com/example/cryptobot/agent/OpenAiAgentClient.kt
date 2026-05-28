@@ -41,7 +41,7 @@ class OpenAiAgentClient(
 
         val portfolioLines = snapshots.joinToString("\n") { s ->
             """
-            - ${s.productId}: price=${s.price}, usdAvailable=${s.usdAvailable}, balance=${s.cryptoBalance}, valueUsd=${s.cryptoValueUsd}, allocationPct=${s.portfolioAllocationPercent}, avgCost=${s.avgCostBasis}, unrealizedPnlPct=${s.unrealizedPnlPercent}, unrealizedPnlUsd=${s.unrealizedPnlUsd}, drawdownFromHighPct=${s.drawdownFromHighPercent}, regime=${s.marketRegime}, trend1h=${s.trend1hPercent}, trend4h=${s.trend4hPercent}, trend24h=${s.trend24hPercent}, trend7d=${s.trend7dPercent}, rsi14=${s.rsi14}, volatility24h=${s.volatility24hPercent}, activeThesis=${s.activeThesis.take(120)}, invalidation=${s.activeInvalidationCondition.take(120)}
+            - ${s.productId}: price=${s.price}, usdAvailable=${s.usdAvailable}, balance=${s.cryptoBalance}, valueUsd=${s.cryptoValueUsd}, allocationPct=${s.portfolioAllocationPercent}, avgCost=${s.avgCostBasis}, unrealizedPnlPct=${s.unrealizedPnlPercent}, unrealizedPnlUsd=${s.unrealizedPnlUsd}, drawdownFromHighPct=${s.drawdownFromHighPercent}, regime=${s.marketRegime}, trend1h=${s.trend1hPercent}, trend4h=${s.trend4hPercent}, trend24h=${s.trend24hPercent}, trend7d=${s.trend7dPercent}, rsi14=${s.rsi14}, volatility24h=${s.volatility24hPercent}, reasonCode30dWinRate=${s.reasonCode30dWinRate}, reasonCode30dCount=${s.reasonCode30dCount}, activeThesis=${s.activeThesis.take(120)}, invalidation=${s.activeInvalidationCondition.take(120)}
             """.trimIndent()
         }
 
@@ -62,6 +62,9 @@ class OpenAiAgentClient(
             BUY behavior:
             - Use BUY when available USD can fund the trade without violating cash reserve.
             - Prefer BUY over ROTATE when there is already enough USD.
+            - Use the product-level 30d reason-code stats as a feedback loop. If reasonCode30dCount >= 5 and reasonCode30dWinRate < 45, require score >= ${botProps.strongAgentEdgeScore} and a clearly improving 1h/4h setup before proposing that same style of BUY.
+            - If reasonCode30dCount >= 5 and reasonCode30dWinRate >= 60, you may slightly prefer that setup, but only when the current regime/trend/RSI still independently support it.
+            - Never chase a broader product universe just because an asset is volatile. More products means more false positives; pick only the top 1-2 risk-adjusted opportunities.
 
             SELL behavior:
             - Use SELL for profit protection, trailing stop, stop loss, or thesis invalidation.
@@ -69,6 +72,7 @@ class OpenAiAgentClient(
 
             Risk controls and configured limits:
             allowedProducts=${botProps.productIds}
+            productUniverseGuidance=This is a broadened watchlist, not a mandate to trade. Treat lower-liquidity/high-beta assets as requiring stronger evidence and cleaner setups than BTC/ETH/SOL.
             usdCashReserve=${botProps.minUsdCashReserve}
             configuredBuySize=${botProps.buyQuoteSizeUsd}
             maxBuySize=${botProps.maxBuyQuoteSizeUsd}
@@ -88,6 +92,7 @@ class OpenAiAgentClient(
 
             Multi-action planning rules:
             - Return only actions worth executing in this scheduled run. Do not fill the plan just because slots exist.
+            - When many products look similar, select the best risk-adjusted action and return SKIP for the rest rather than forcing activity.
             - Rank actions from most urgent/highest edge to lowest edge.
             - Never include more than ${botProps.maxBuysPerRun} BUY actions, ${botProps.maxSellsPerRun} SELL actions, or ${botProps.maxRotationsPerRun} ROTATE actions.
             - Do not include two actions that buy the same product in the same run.
@@ -126,6 +131,11 @@ class OpenAiAgentClient(
             Evaluate this single asset and recommend BUY, SELL, or SKIP.
             Consider momentum, volatility, RSI14, proximity to highs/lows, risk/reward, current position, P&L, thesis, and allocation.
             Do not recommend SELL for assets with zero balance. Prefer partial exits for SELL.
+            Performance feedback rules:
+            - reasonCode30dWinRate and reasonCode30dCount summarize recent realized performance for this asset's prior reason-code setups.
+            - If reasonCode30dCount >= 5 and reasonCode30dWinRate < 45, do not repeat that same setup unless score >= ${botProps.strongAgentEdgeScore} and 1h/4h trends confirm recovery/continuation.
+            - If reasonCode30dCount >= 5 and reasonCode30dWinRate >= 60, that is supportive but not sufficient by itself; current market data still has to justify the trade.
+
             Capital preservation mode rules:
             - If maxBuysPerRun is 0 or maxTotalBuyUsdPerRun is 0, do not recommend BUY. Recommend SELL only for real risk reduction, otherwise SKIP.
             - Never recommend BUY in CRASH. In BEAR_TREND, BUY requires score >= ${botProps.bearTrendMinBuyScore}.
@@ -160,6 +170,8 @@ class OpenAiAgentClient(
             trend7dPercent=${snapshot.trend7dPercent}
             rsi14=${snapshot.rsi14}
             volatility24hPercent=${snapshot.volatility24hPercent}
+            reasonCode30dWinRate=${snapshot.reasonCode30dWinRate}
+            reasonCode30dCount=${snapshot.reasonCode30dCount}
         """.trimIndent()
 
         return callOpenAi(prompt, snapshot.productId)
