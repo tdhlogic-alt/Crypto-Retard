@@ -82,7 +82,8 @@ bot:
 
   # Capital preservation guardrails. Defaults are intentionally defensive while recovering from drawdown.
   buy-cooldown-hours: ${BOT_BUY_COOLDOWN_HOURS:6}
-  max-daily-live-trades: ${BOT_MAX_DAILY_LIVE_TRADES:5}
+  # Caps only exposure-increasing live BUYs. SELLs are intentionally uncapped so risk-reduction exits are never blocked.
+  max-daily-live-buys: ${BOT_MAX_DAILY_LIVE_BUYS:${BOT_MAX_DAILY_LIVE_TRADES:5}}
   bear-trend-min-buy-score: ${BOT_BEAR_TREND_MIN_BUY_SCORE:90}
   oversold-bounce-max-rsi: ${BOT_OVERSOLD_BOUNCE_MAX_RSI:35}
   oversold-bounce-min-recovery-trend-percent: ${BOT_OVERSOLD_BOUNCE_MIN_RECOVERY_TREND_PERCENT:0.0}
