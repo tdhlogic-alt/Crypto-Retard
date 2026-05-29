@@ -79,9 +79,11 @@ bot:
   max-sells-per-run: ${BOT_MAX_SELLS_PER_RUN:1}
   max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:0}
   max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:80.00}
+  max-daily-live-buys-per-product: ${BOT_MAX_DAILY_LIVE_BUYS_PER_PRODUCT:2}
 
   # Capital preservation guardrails. Defaults are intentionally defensive while recovering from drawdown.
   buy-cooldown-hours: ${BOT_BUY_COOLDOWN_HOURS:6}
+  post-sell-cooldown-hours: ${BOT_POST_SELL_COOLDOWN_HOURS:12}
   # Caps only exposure-increasing live BUYs. SELLs are intentionally uncapped so risk-reduction exits are never blocked.
   max-daily-live-buys: ${BOT_MAX_DAILY_LIVE_BUYS:${BOT_MAX_DAILY_LIVE_TRADES:5}}
   bear-trend-min-buy-score: ${BOT_BEAR_TREND_MIN_BUY_SCORE:90}
@@ -116,7 +118,8 @@ coinbase:
   private-key-pem: ${COINBASE_PRIVATE_KEY_PEM:}
 
   # Coinbase API protection. Keeps the expanded product universe from creating request bursts.
-  product-cache-ttl: ${COINBASE_PRODUCT_CACHE_TTL:45s}
+  # Product metadata is effectively static for this bot; use a long TTL for non-exiting/local runs.
+  product-cache-ttl: ${COINBASE_PRODUCT_CACHE_TTL:6h}
   rate-limit-for-period: ${COINBASE_RATE_LIMIT_FOR_PERIOD:6}
   rate-limit-refresh-period: ${COINBASE_RATE_LIMIT_REFRESH_PERIOD:1s}
   rate-limit-timeout: ${COINBASE_RATE_LIMIT_TIMEOUT:5s}

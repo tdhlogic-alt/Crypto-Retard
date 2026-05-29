@@ -198,10 +198,14 @@ class BotRunner(
         val accepted = mutableListOf<ValidatedPlanAction>()
         val skipped = mutableListOf<PlanActionReport>()
 
-        fun canSpend(amount: BigDecimal): Boolean =
-            amount > BigDecimal.ZERO &&
-                projectedUsd - amount >= props.minUsdCashReserve &&
-                projectedBuyUsd + amount <= props.maxTotalBuyUsdPerRun
+        fun buyRejectionReason(amount: BigDecimal): String? = when {
+            amount <= BigDecimal.ZERO -> "buy size must be positive"
+            projectedUsd - amount < props.minUsdCashReserve ->
+                "insufficient projected USD after reserve. projectedUsd=$projectedUsd amount=$amount reserve=${props.minUsdCashReserve}"
+            projectedBuyUsd + amount > props.maxTotalBuyUsdPerRun ->
+                "max total buy USD per run reached. projectedBuyUsd=$projectedBuyUsd amount=$amount max=${props.maxTotalBuyUsdPerRun}"
+            else -> null
+        }
 
         fun reject(action: ValidatedPlanAction, detail: String) {
             skipped += PlanActionReport.from(action, "SKIPPED", detail)
@@ -217,7 +221,9 @@ class BotRunner(
                 is TradingDecision.Buy -> {
                     if (buyCount >= props.maxBuysPerRun) { reject(action, "max buys per run reached"); continue@actionLoop }
                     if (decision.productId in boughtProducts) { reject(action, "already buying ${decision.productId} this run"); continue@actionLoop }
-                    if (!canSpend(decision.quoteSizeUsd)) { reject(action, "insufficient projected USD after reserve or max total buy USD reached"); continue@actionLoop }
+                    if (decision.productId in soldProducts) { reject(action, "not rebuying ${decision.productId} in same run after a sell"); continue@actionLoop }
+                    val buyRejection = buyRejectionReason(decision.quoteSizeUsd)
+                    if (buyRejection != null) { reject(action, buyRejection); continue@actionLoop }
 
                     projectedUsd -= decision.quoteSizeUsd
                     projectedBuyUsd += decision.quoteSizeUsd
@@ -246,6 +252,7 @@ class BotRunner(
                     if (buyCount >= props.maxBuysPerRun) { reject(action, "max buys per run reached"); continue@actionLoop }
                     if (sellCount >= props.maxSellsPerRun) { reject(action, "max sells per run reached"); continue@actionLoop }
                     if (decision.buy.productId in boughtProducts) { reject(action, "already buying ${decision.buy.productId} this run"); continue@actionLoop }
+                    if (decision.buy.productId in soldProducts) { reject(action, "not rebuying ${decision.buy.productId} in same run after a sell"); continue@actionLoop }
                     if (decision.sell.productId in soldProducts) { reject(action, "already selling ${decision.sell.productId} this run"); continue@actionLoop }
 
                     val fundingSnapshot = snapshotsByProduct[decision.sell.productId]
@@ -258,7 +265,11 @@ class BotRunner(
                     val fundingNotionalUsd = decision.sell.baseSize.multiply(fundingSnapshot.price)
                     val projectedUsdAfterRotation = projectedUsd + fundingNotionalUsd - decision.buy.quoteSizeUsd
                     if (projectedUsdAfterRotation < props.minUsdCashReserve) { reject(action, "rotation would violate min USD cash reserve"); continue@actionLoop }
-                    if (projectedBuyUsd + decision.buy.quoteSizeUsd > props.maxTotalBuyUsdPerRun) { reject(action, "rotation would exceed max total buy USD per run"); continue@actionLoop }
+                    if (decision.buy.quoteSizeUsd <= BigDecimal.ZERO) { reject(action, "rotation buy size must be positive"); continue@actionLoop }
+                    if (projectedBuyUsd + decision.buy.quoteSizeUsd > props.maxTotalBuyUsdPerRun) {
+                        reject(action, "rotation buy rejected: max total buy USD per run reached. projectedBuyUsd=$projectedBuyUsd amount=${decision.buy.quoteSizeUsd} max=${props.maxTotalBuyUsdPerRun}")
+                        continue@actionLoop
+                    }
 
                     projectedBalances[decision.sell.productId] = availableBase - decision.sell.baseSize
                     projectedUsd = projectedUsdAfterRotation
@@ -390,6 +401,7 @@ class BotRunner(
             Proposed: ${report.proposedActionCount}
             Execution attempts: ${report.executedActionCount}
             Skipped/rejected: ${report.skippedActionCount}
+            Buy budget this run: max=${'$'}{props.maxTotalBuyUsdPerRun}, maxBuys=${props.maxBuysPerRun}, maxDailyBuys=${props.maxDailyLiveBuys}, maxDailyPerProduct=${props.maxDailyLiveBuysPerProduct}
 
             EXECUTED / ATTEMPTED:
             $executedLines
@@ -734,83 +746,78 @@ class BotRunner(
                 }
 
                 else -> {
-                    val recentSince = Instant.now().minus(props.buyCooldownHours, ChronoUnit.HOURS)
+                    val recentBuySince = Instant.now().minus(props.buyCooldownHours, ChronoUnit.HOURS)
+                    val recentSellSince = Instant.now().minus(props.postSellCooldownHours, ChronoUnit.HOURS)
                     val todaySince = Instant.now().truncatedTo(ChronoUnit.DAYS)
 
-                    ledger.hasRecentLiveBuy(decision.productId, recentSince)
-                        .flatMap { hasRecentBuy ->
-                            if (hasRecentBuy) {
-                                val message = "🛑 LIVE TRADE BLOCKED: ${decision.productId} is in ${props.buyCooldownHours}h buy cooldown"
-                                log.warn(message)
+                    ledger.hasRecentLiveBuy(decision.productId, recentBuySince)
+                        .zipWith(ledger.hasRecentLiveSell(decision.productId, recentSellSince))
+                        .flatMap { cooldowns ->
+                            val hasRecentBuy = cooldowns.t1
+                            val hasRecentSell = cooldowns.t2
 
-                                ledger.record(
-                                    snapshot = snapshot,
-                                    decisionType = "BLOCKED_BUY",
-                                    reason = message,
-                                    dryRun = false,
-                                    quoteSizeUsd = decision.quoteSizeUsd,
-                                )
-                                    .then(alerts.send(message))
-                                    .thenReturn(Unit)
+                            if (hasRecentBuy) {
+                                blockBuy(snapshot, decision, "${decision.productId} is in ${props.buyCooldownHours}h buy cooldown")
+                            } else if (hasRecentSell) {
+                                blockBuy(snapshot, decision, "${decision.productId} is in ${props.postSellCooldownHours}h post-sell cooldown")
                             } else {
                                 ledger.liveBuyCountSince(todaySince)
-                                    .flatMap { buyCountToday ->
-                                        if (buyCountToday >= props.maxDailyLiveBuys) {
-                                            val message = "🛑 LIVE TRADE BLOCKED: daily live buy count limit reached. buysToday=$buyCountToday max=${props.maxDailyLiveBuys}"
-                                            log.warn(message)
+                                    .zipWith(ledger.liveBuyCountSince(decision.productId, todaySince))
+                                    .flatMap { counts ->
+                                        val buyCountToday = counts.t1
+                                        val productBuyCountToday = counts.t2
 
-                                            ledger.record(
-                                                snapshot = snapshot,
-                                                decisionType = "BLOCKED_BUY",
-                                                reason = message,
-                                                dryRun = false,
-                                                quoteSizeUsd = decision.quoteSizeUsd,
-                                            )
-                                                .then(alerts.send(message))
-                                                .thenReturn(Unit)
-                                        } else {
-                                            val message =
-                                                "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
-                                            log.warn(message)
+                                        when {
+                                            buyCountToday >= props.maxDailyLiveBuys -> {
+                                                blockBuy(snapshot, decision, "daily live buy count limit reached. buysToday=$buyCountToday max=${props.maxDailyLiveBuys}")
+                                            }
+                                            productBuyCountToday >= props.maxDailyLiveBuysPerProduct -> {
+                                                blockBuy(snapshot, decision, "daily live buy count limit reached for ${decision.productId}. productBuysToday=$productBuyCountToday max=${props.maxDailyLiveBuysPerProduct}")
+                                            }
+                                            else -> {
+                                                val message =
+                                                    "🚨 LIVE TRADE: BUY ${decision.quoteSizeUsd} of ${decision.productId}. Reason: ${decision.reason}"
+                                                log.warn(message)
 
-                                            alerts.send(message)
-                                                .then(
-                                                    coinbaseClient.createMarketBuy(
-                                                        decision.productId,
-                                                        decision.quoteSizeUsd
+                                                alerts.send(message)
+                                                    .then(
+                                                        coinbaseClient.createMarketBuy(
+                                                            decision.productId,
+                                                            decision.quoteSizeUsd
+                                                        )
                                                     )
-                                                )
-                                                .flatMap { response ->
-                                                    ledger.record(
-                                                        snapshot = snapshot,
-                                                        decisionType = "BUY",
-                                                        reason = decision.reason,
-                                                        dryRun = false,
-                                                        quoteSizeUsd = decision.quoteSizeUsd,
-                                                        coinbaseSuccess = response.success,
-                                                        reasonCode = decision.reasonCode,
-                                                        thesis = decision.thesis,
-                                                        invalidationCondition = decision.invalidationCondition,
-                                                        profitTargetPercent = decision.profitTargetPercent,
-                                                        stopLossPercent = decision.stopLossPercent,
-                                                        maxHoldHours = decision.maxHoldHours,
-                                                        errorMessage = response.errorResponse?.toString(),
-                                                    ).then(
-                                                        if (response.success) {
-                                                            ledger.applyLiveBuy(
-                                                                snapshot = snapshot,
-                                                                quoteSizeUsd = decision.quoteSizeUsd,
-                                                                reasonCode = decision.reasonCode,
-                                                                thesis = decision.thesis,
-                                                                invalidationCondition = decision.invalidationCondition,
-                                                                profitTargetPercent = decision.profitTargetPercent,
-                                                                stopLossPercent = decision.stopLossPercent,
-                                                                maxHoldHours = decision.maxHoldHours,
-                                                            )
-                                                        } else Mono.empty()
-                                                    )
-                                                }
-                                                .thenReturn(Unit)
+                                                    .flatMap { response ->
+                                                        ledger.record(
+                                                            snapshot = snapshot,
+                                                            decisionType = "BUY",
+                                                            reason = decision.reason,
+                                                            dryRun = false,
+                                                            quoteSizeUsd = decision.quoteSizeUsd,
+                                                            coinbaseSuccess = response.success,
+                                                            reasonCode = decision.reasonCode,
+                                                            thesis = decision.thesis,
+                                                            invalidationCondition = decision.invalidationCondition,
+                                                            profitTargetPercent = decision.profitTargetPercent,
+                                                            stopLossPercent = decision.stopLossPercent,
+                                                            maxHoldHours = decision.maxHoldHours,
+                                                            errorMessage = response.errorResponse?.toString(),
+                                                        ).then(
+                                                            if (response.success) {
+                                                                ledger.applyLiveBuy(
+                                                                    snapshot = snapshot,
+                                                                    quoteSizeUsd = decision.quoteSizeUsd,
+                                                                    reasonCode = decision.reasonCode,
+                                                                    thesis = decision.thesis,
+                                                                    invalidationCondition = decision.invalidationCondition,
+                                                                    profitTargetPercent = decision.profitTargetPercent,
+                                                                    stopLossPercent = decision.stopLossPercent,
+                                                                    maxHoldHours = decision.maxHoldHours,
+                                                                )
+                                                            } else Mono.empty()
+                                                        )
+                                                    }
+                                                    .thenReturn(Unit)
+                                            }
                                         }
                                     }
                             }
@@ -912,6 +919,26 @@ class BotRunner(
                 }
             }
         }
+    }
+
+    private fun blockBuy(
+        snapshot: MarketSnapshot,
+        decision: TradingDecision.Buy,
+        reason: String,
+    ): Mono<Unit> {
+        val message = "🛑 LIVE TRADE BLOCKED: $reason"
+        log.warn(message)
+
+        return ledger.record(
+            snapshot = snapshot,
+            decisionType = "BLOCKED_BUY",
+            reason = message,
+            dryRun = false,
+            quoteSizeUsd = decision.quoteSizeUsd,
+            reasonCode = decision.reasonCode,
+        )
+            .then(alerts.send(message))
+            .thenReturn(Unit)
     }
 
     private fun classifyMarketRegime(
