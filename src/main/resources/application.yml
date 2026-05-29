@@ -78,7 +78,7 @@ bot:
   max-buys-per-run: ${BOT_MAX_BUYS_PER_RUN:1}
   max-sells-per-run: ${BOT_MAX_SELLS_PER_RUN:1}
   max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:0}
-  max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:25.00}
+  max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:80.00}
 
   # Capital preservation guardrails. Defaults are intentionally defensive while recovering from drawdown.
   buy-cooldown-hours: ${BOT_BUY_COOLDOWN_HOURS:6}

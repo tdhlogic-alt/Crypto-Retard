@@ -68,4 +68,5 @@ jobs:
             --region us-central1 \
             --platform managed \
             --port 8080 \
+            --update-env-vars BOT_MAX_TOTAL_BUY_USD_PER_RUN=80.00 \
             --quiet
