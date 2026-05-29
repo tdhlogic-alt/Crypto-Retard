@@ -368,10 +368,14 @@ class TradeLedgerClient(
     }
 
     fun hasRecentLiveBuy(productId: String, since: Instant): Mono<Boolean> {
+        return liveBuyCountSince(productId, since).map { it > 0 }
+    }
+
+    fun hasRecentLiveSell(productId: String, since: Instant): Mono<Boolean> {
         return Mono.fromCallable {
             val snapshot = decisions
                 .whereEqualTo("productId", productId)
-                .whereEqualTo("decisionType", "BUY")
+                .whereEqualTo("decisionType", "SELL")
                 .whereEqualTo("dryRun", false)
                 .whereEqualTo("coinbaseSuccess", true)
                 .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
@@ -380,6 +384,23 @@ class TradeLedgerClient(
                 .get()
 
             !snapshot.isEmpty
+        }.subscribeOn(Schedulers.boundedElastic())
+    }
+
+    fun liveBuyCountSince(productId: String, since: Instant): Mono<Int> {
+        return Mono.fromCallable {
+            val snapshot = decisions
+                .whereEqualTo("productId", productId)
+                .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
+                .get()
+                .get()
+
+            snapshot.documents.count { doc ->
+                val decisionType = doc.getString("decisionType")
+                decisionType in setOf("BUY", "ROTATE_BUY") &&
+                    doc.getBoolean("dryRun") == false &&
+                    doc.getBoolean("coinbaseSuccess") == true
+            }
         }.subscribeOn(Schedulers.boundedElastic())
     }
 
