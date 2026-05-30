@@ -74,6 +74,8 @@ class AgentDecisionValidator(
         }
         val sellNotionalUsd = decision.baseSize.multiply(snapshot.price)
         val fullPositionNotionalUsd = snapshot.cryptoBalance.multiply(snapshot.price)
+        val strongThesisInvalidation = decision.reasonCode == "THESIS_INVALIDATED" && hasStrongThesisInvalidationEvidence(snapshot, decision)
+        val hardRiskSell = decision.reasonCode == "STOP_LOSS" || strongThesisInvalidation
 
         return when {
             decision.baseSize <= BigDecimal.ZERO -> TradingDecision.Skip("Agent sell size invalid: ${decision.baseSize}")
@@ -82,15 +84,13 @@ class AgentDecisionValidator(
             !props.allowAiSellAtLoss &&
                     snapshot.unrealizedPnlPercent < BigDecimal.ZERO &&
                     snapshot.unrealizedPnlPercent > props.aiSellLossFloorPercent &&
-                    decision.reasonCode != "STOP_LOSS" &&
-                    decision.reasonCode != "THESIS_INVALIDATED" -> TradingDecision.Skip(
-                "Agent SELL rejected: loss sell not allowed for non-stop/thesis reason. pnl=${snapshot.unrealizedPnlPercent}% reasonCode=${decision.reasonCode}"
+                    !hardRiskSell -> TradingDecision.Skip(
+                "Agent SELL rejected: loss sell not allowed without STOP_LOSS or strong THESIS_INVALIDATED evidence. pnl=${snapshot.unrealizedPnlPercent}% reasonCode=${decision.reasonCode}"
             )
             snapshot.unrealizedPnlPercent < props.minProfitPercentForAiSell &&
                     snapshot.drawdownFromHighPercent < props.maxDrawdownFromHighPercent &&
-                    decision.reasonCode != "STOP_LOSS" &&
-                    decision.reasonCode != "THESIS_INVALIDATED" -> TradingDecision.Skip(
-                "Agent SELL rejected: pnl ${snapshot.unrealizedPnlPercent}% below profit threshold ${props.minProfitPercentForAiSell}% and drawdown ${snapshot.drawdownFromHighPercent}% below stop threshold ${props.maxDrawdownFromHighPercent}%"
+                    !hardRiskSell -> TradingDecision.Skip(
+                "Agent SELL rejected: pnl ${snapshot.unrealizedPnlPercent}% below profit threshold ${props.minProfitPercentForAiSell}% and drawdown ${snapshot.drawdownFromHighPercent}% below stop threshold ${props.maxDrawdownFromHighPercent}%. THESIS_INVALIDATED requires pnl <= ${props.aiSellLossFloorPercent}%, drawdown >= ${props.maxDrawdownFromHighPercent}%, CRASH/BEAR_TREND regime, or confidence >= 0.80 with score >= ${props.strongAgentEdgeScore}."
             )
             else -> TradingDecision.Sell(
                 productId = decision.productId,
@@ -99,6 +99,15 @@ class AgentDecisionValidator(
                 reasonCode = decision.reasonCode,
             )
         }
+    }
+
+    private fun hasStrongThesisInvalidationEvidence(snapshot: MarketSnapshot, decision: AgentTradeDecision): Boolean {
+        val highConfidence = BigDecimal("0.80")
+        return snapshot.unrealizedPnlPercent <= props.aiSellLossFloorPercent ||
+                snapshot.drawdownFromHighPercent >= props.maxDrawdownFromHighPercent ||
+                snapshot.marketRegime == "CRASH" ||
+                snapshot.marketRegime == "BEAR_TREND" ||
+                (decision.confidence >= highConfidence && decision.score >= props.strongAgentEdgeScore)
     }
 
     private fun validateRotate(

@@ -67,7 +67,9 @@ class OpenAiAgentClient(
             - Never chase a broader product universe just because an asset is volatile. More products means more false positives; pick only the top 1-2 risk-adjusted opportunities.
 
             SELL behavior:
-            - Use SELL for profit protection, trailing stop, stop loss, or thesis invalidation.
+            - Use SELL for profit protection, trailing stop, stop loss, or true thesis invalidation.
+            - Do not use THESIS_INVALIDATED as a generic "market looks weak" reason. Use it only when the original buy thesis is specifically broken and there is hard evidence: pnl <= ${botProps.aiSellLossFloorPercent}%, drawdown >= ${botProps.maxDrawdownFromHighPercent}%, CRASH/BEAR_TREND regime, or confidence >= 0.80 with score >= ${botProps.strongAgentEdgeScore}.
+            - If the setup is merely softer, choppy, or mildly red, prefer SKIP unless PROFIT_PROTECTION, TRAILING_STOP, or STOP_LOSS clearly applies.
             - Prefer partial sells, usually 25%-50% of the held asset.
 
             Risk controls and configured limits:
