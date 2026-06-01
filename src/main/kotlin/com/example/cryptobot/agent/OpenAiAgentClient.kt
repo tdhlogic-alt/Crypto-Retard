@@ -3,6 +3,8 @@ package com.example.cryptobot.agent
 import com.example.cryptobot.config.BotProperties
 import com.example.cryptobot.config.OpenAiProperties
 import com.example.cryptobot.strategy.MarketSnapshot
+import com.example.cryptobot.strategy.StrategySignal
+import com.example.cryptobot.strategy.TradingDecision
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Component
@@ -29,6 +31,63 @@ class OpenAiAgentClient(
                 reason = "Agent returned an empty plan",
             )
         }
+
+
+    fun decideStrategyVetoPlan(
+        snapshots: List<MarketSnapshot>,
+        proposedSignals: List<StrategySignal>,
+    ): Mono<AgentTradePlan> {
+        val fallbackProduct = snapshots.firstOrNull()?.productId ?: "BTC-USD"
+        if (openAiProps.apiKey.isBlank()) {
+            return Mono.just(AgentTradePlan(proposedSignals.map { signal ->
+                AgentTradeDecision(action = "SKIP", productId = signal.productId(), reason = "OpenAI API key not configured; vetoing non-hard-exit strategy entry")
+            }))
+        }
+        if (proposedSignals.isEmpty()) {
+            return Mono.just(AgentTradePlan(listOf(AgentTradeDecision(action = "SKIP", productId = fallbackProduct, reason = "No strategy signals to review"))))
+        }
+
+        val portfolioLines = snapshots.joinToString("\n") { s ->
+            "- ${s.productId}: price=${s.price}, balance=${s.cryptoBalance}, valueUsd=${s.cryptoValueUsd}, allocationPct=${s.portfolioAllocationPercent}, pnlPct=${s.unrealizedPnlPercent}, drawdown=${s.drawdownFromHighPercent}, regime=${s.marketRegime}, trend1h=${s.trend1hPercent}, trend4h=${s.trend4hPercent}, trend24h=${s.trend24hPercent}, trend7d=${s.trend7dPercent}, rsi14=${s.rsi14}, volatility24h=${s.volatility24hPercent}"
+        }
+        val signalLines = proposedSignals.joinToString("\n") { signal ->
+            val d = signal.decision
+            when (d) {
+                is TradingDecision.Buy -> "- PROPOSED BUY ${d.productId}: quoteSizeUsd=${d.quoteSizeUsd}, reasonCode=${d.reasonCode}, thesis=${d.thesis.take(160)}, stopLossPct=${d.stopLossPercent}, profitTargetPct=${d.profitTargetPercent}, rationale=${signal.rationale}"
+                is TradingDecision.Sell -> "- PROPOSED SELL ${d.productId}: baseSize=${d.baseSize}, reasonCode=${d.reasonCode}, rationale=${signal.rationale}"
+                is TradingDecision.Rotate -> "- PROPOSED ROTATE ${d.sell.productId}->${d.buy.productId}: buyUsd=${d.buy.quoteSizeUsd}, rationale=${signal.rationale}"
+                is TradingDecision.Skip -> "- PROPOSED SKIP: ${d.reason}"
+            }
+        }
+
+        val prompt = """
+            You are only a veto layer for a crypto trading bot. You are not the trader.
+            The deterministic strategy engine has already generated the only allowed candidate trades below.
+
+            Rules:
+            - You may not invent new trades.
+            - You may not change productId, action, size, stop loss, take profit, thesis, or max hold.
+            - To approve a candidate, repeat the same action and productId. Use confidence >= ${botProps.agentMinConfidence} only when approval is strong.
+            - To veto a candidate, return SKIP for that product with a concise reason.
+            - Prefer veto when the setup is choppy, overextended, low-liquidity, regime-conflicted, or the risk/reward is unclear.
+            - Hard exits are not sent to you; never block deterministic risk exits.
+
+            Proposed deterministic candidates:
+            $signalLines
+
+            Current portfolio/market snapshots:
+            $portfolioLines
+        """.trimIndent()
+
+        return callOpenAiPlan(prompt, fallbackProduct)
+    }
+
+    private fun StrategySignal.productId(): String = when (val d = decision) {
+        is TradingDecision.Buy -> d.productId
+        is TradingDecision.Sell -> d.productId
+        is TradingDecision.Rotate -> d.buy.productId
+        is TradingDecision.Skip -> "BTC-USD"
+    }
 
     fun decidePortfolioPlan(snapshots: List<MarketSnapshot>): Mono<AgentTradePlan> {
         val fallbackProduct = snapshots.firstOrNull()?.productId ?: "BTC-USD"

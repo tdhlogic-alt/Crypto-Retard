@@ -9,7 +9,9 @@ import com.example.cryptobot.config.BotProperties
 import com.example.cryptobot.config.CoinbaseProperties
 import com.example.cryptobot.persistence.TradeLedgerClient
 import com.example.cryptobot.strategy.MarketSnapshot
+import com.example.cryptobot.strategy.DeterministicStrategyEngine
 import com.example.cryptobot.strategy.SimpleDipBuyStrategy
+import com.example.cryptobot.strategy.StrategySignal
 import com.example.cryptobot.strategy.TradingDecision
 import org.slf4j.LoggerFactory
 import org.springframework.boot.CommandLineRunner
@@ -33,6 +35,7 @@ class BotRunner(
     private val coinbaseClient: CoinbaseClient,
     private val coinbaseProps: CoinbaseProperties,
     private val strategy: SimpleDipBuyStrategy,
+    private val deterministicStrategyEngine: DeterministicStrategyEngine,
     private val alerts: DiscordAlertClient,
     private val ledger: TradeLedgerClient,
     private val agentClient: OpenAiAgentClient,
@@ -52,32 +55,36 @@ class BotRunner(
 
             buildSnapshots()
                 .flatMap { snapshots ->
-                    if (props.agentEnabled) {
-                        agentClient.decidePortfolioPlan(snapshots)
-                            .flatMap { agentPlan ->
-                                val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
-                                decisions.forEachIndexed { index, agentDecision ->
-                                    log.info(
-                                        "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
-                                        index + 1,
-                                        agentDecision.productId,
-                                        agentDecision.action,
-                                        agentDecision.score,
-                                        agentDecision.confidence,
-                                        agentDecision.fundingProductId,
-                                        agentDecision.reason
-                                    )
-                                }
+                    when {
+                        props.strategyModeEnabled -> executeStrategyFirstPlan(snapshots)
+                        props.agentEnabled -> {
+                            agentClient.decidePortfolioPlan(snapshots)
+                                .flatMap { agentPlan ->
+                                    val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
+                                    decisions.forEachIndexed { index, agentDecision ->
+                                        log.info(
+                                            "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
+                                            index + 1,
+                                            agentDecision.productId,
+                                            agentDecision.action,
+                                            agentDecision.score,
+                                            agentDecision.confidence,
+                                            agentDecision.fundingProductId,
+                                            agentDecision.reason
+                                        )
+                                    }
 
-                                executeAgentPlan(snapshots, decisions)
-                            }
-                    } else {
-                        Flux.fromIterable(snapshots)
-                            .flatMap { snapshot ->
-                                val decision = strategy.decide(snapshot)
-                                execute(snapshot, decision)
-                            }
-                            .then()
+                                    executeAgentPlan(snapshots, decisions)
+                                }
+                        }
+                        else -> {
+                            Flux.fromIterable(snapshots)
+                                .flatMap { snapshot ->
+                                    val decision = strategy.decide(snapshot)
+                                    execute(snapshot, decision)
+                                }
+                                .then()
+                        }
                     }
                 }
                 .retryWhen(
@@ -122,6 +129,108 @@ class BotRunner(
                 exitProcess(springExitCode)
             }
         }
+    }
+
+
+    private fun executeStrategyFirstPlan(snapshots: List<MarketSnapshot>): Mono<Unit> {
+        val signals = deterministicStrategyEngine.propose(snapshots)
+        val snapshotsByProduct = snapshots.associateBy { it.productId }
+
+        if (signals.isEmpty()) {
+            val reason = "Strategy-first mode: no deterministic strategy edge. AI was not asked to invent a trade."
+            return execute(snapshots.first(), TradingDecision.Skip(reason), snapshotsByProduct)
+                .then(alerts.send("🧠 Strategy-first plan: SKIP. $reason"))
+                .thenReturn(Unit)
+        }
+
+        val hardExits = signals.filter { it.hardExit || !it.requiresAiApproval }
+        val aiGated = signals.filter { it.requiresAiApproval && !it.hardExit }
+
+        val hardExitExecution = if (hardExits.isEmpty()) {
+            Mono.empty()
+        } else {
+            alerts.send(formatStrategySignalAlert("Deterministic hard exits", hardExits))
+                .thenMany(Flux.fromIterable(hardExits))
+                .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
+                .then()
+        }
+
+        val aiGatedExecution = if (aiGated.isEmpty()) {
+            Mono.empty()
+        } else if (!props.strategyAiVetoEnabled || !props.agentEnabled) {
+            alerts.send(formatStrategySignalAlert("Deterministic entries without AI veto", aiGated))
+                .thenMany(Flux.fromIterable(aiGated))
+                .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
+                .then()
+        } else {
+            agentClient.decideStrategyVetoPlan(snapshots, aiGated)
+                .flatMap { vetoPlan ->
+                    val approved = applyAiVeto(aiGated, vetoPlan.decisions)
+                    val blockedCount = aiGated.size - approved.size
+                    val alert = formatStrategySignalAlert(
+                        title = "Strategy entries after AI veto: approved=${approved.size}, blocked=$blockedCount",
+                        signals = approved,
+                    )
+                    alerts.send(alert)
+                        .thenMany(Flux.fromIterable(approved))
+                        .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
+                        .then()
+                }
+        }
+
+        return hardExitExecution.then(aiGatedExecution).thenReturn(Unit)
+    }
+
+    private fun applyAiVeto(
+        proposedSignals: List<StrategySignal>,
+        vetoDecisions: List<AgentTradeDecision>,
+    ): List<StrategySignal> {
+        val approvals = vetoDecisions
+            .filter { it.action != "SKIP" && it.confidence >= props.agentMinConfidence }
+            .map { it.productId to it.action }
+            .toSet()
+
+        return proposedSignals.filter { signal ->
+            val decision = signal.decision
+            val key = when (decision) {
+                is TradingDecision.Buy -> decision.productId to "BUY"
+                is TradingDecision.Sell -> decision.productId to "SELL"
+                is TradingDecision.Rotate -> decision.buy.productId to "ROTATE"
+                is TradingDecision.Skip -> "" to "SKIP"
+            }
+            key in approvals
+        }
+    }
+
+    private fun StrategySignal.snapshotOrFallback(
+        snapshotsByProduct: Map<String, MarketSnapshot>,
+        snapshots: List<MarketSnapshot>,
+    ): MarketSnapshot {
+        val productId = when (val decision = decision) {
+            is TradingDecision.Buy -> decision.productId
+            is TradingDecision.Sell -> decision.productId
+            is TradingDecision.Rotate -> decision.buy.productId
+            is TradingDecision.Skip -> snapshots.first().productId
+        }
+        return snapshotsByProduct[productId] ?: snapshots.first()
+    }
+
+    private fun formatStrategySignalAlert(title: String, signals: List<StrategySignal>): String {
+        val lines = if (signals.isEmpty()) "None" else signals.joinToString("\n") { signal ->
+            val action = when (val decision = signal.decision) {
+                is TradingDecision.Buy -> "BUY ${decision.productId} ${'$'}${decision.quoteSizeUsd}"
+                is TradingDecision.Sell -> "SELL ${decision.productId} base=${decision.baseSize}"
+                is TradingDecision.Rotate -> "ROTATE ${decision.sell.productId} -> ${decision.buy.productId}"
+                is TradingDecision.Skip -> "SKIP"
+            }
+            "- $action strategy=${signal.strategyName} hardExit=${signal.hardExit} priority=${signal.priority}: ${signal.rationale}"
+        }
+
+        return """
+            🧠 $title
+
+            $lines
+        """.trimIndent()
     }
 
     private fun formatAgentPlanAlert(decisions: List<AgentTradeDecision>): String {
