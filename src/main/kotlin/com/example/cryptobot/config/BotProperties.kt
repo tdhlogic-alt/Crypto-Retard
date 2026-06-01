@@ -45,6 +45,17 @@ data class BotProperties(
     val oversoldBounceMaxRsi: BigDecimal = BigDecimal("35"),
     val oversoldBounceMinRecoveryTrendPercent: BigDecimal = BigDecimal("0.0"),
     val minSellNotionalUsd: BigDecimal = BigDecimal("10.00"),
+    val strategyModeEnabled: Boolean = true,
+    val strategyAiVetoEnabled: Boolean = true,
+    val strategyQuoteSizeUsd: BigDecimal = BigDecimal("15.00"),
+    val strategyStopLossPercent: BigDecimal = BigDecimal("4.0"),
+    val strategyTakeProfitPercent: BigDecimal = BigDecimal("8.0"),
+    val strategyTrailingDrawdownPercent: BigDecimal = BigDecimal("4.0"),
+    val strategyMinTrend7dPercent: BigDecimal = BigDecimal("2.0"),
+    val strategyMinRecovery4hPercent: BigDecimal = BigDecimal("0.0"),
+    val strategyMaxEntry24hPercent: BigDecimal = BigDecimal("4.0"),
+    val strategyMaxEntryRsi: BigDecimal = BigDecimal("60"),
+    val strategyMaxHoldHours: Long = 168,
     val exitOnCompletion: Boolean = true,
 )
 

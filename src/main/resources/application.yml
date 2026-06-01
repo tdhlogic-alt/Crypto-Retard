@@ -16,7 +16,7 @@ management:
 
 bot:
   enabled: true
-  dry-run: false
+  dry-run: ${BOT_DRY_RUN:true}
   fixed-rate-ms: 900000
   exit-on-completion: ${BOT_EXIT_ON_COMPLETION:true}
 
@@ -53,7 +53,7 @@ bot:
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}
 
   max-buy-quote-size-usd: ${BOT_MAX_BUY_QUOTE_SIZE_USD:25.00}
-  live-trading-enabled: ${BOT_LIVE_TRADING_ENABLED:true}
+  live-trading-enabled: ${BOT_LIVE_TRADING_ENABLED:false}
 
   agent-enabled: ${BOT_AGENT_ENABLED:true}
   agent-min-confidence: ${BOT_AGENT_MIN_CONFIDENCE:0.72}
@@ -90,6 +90,20 @@ bot:
   oversold-bounce-max-rsi: ${BOT_OVERSOLD_BOUNCE_MAX_RSI:35}
   oversold-bounce-min-recovery-trend-percent: ${BOT_OVERSOLD_BOUNCE_MIN_RECOVERY_TREND_PERCENT:0.0}
   min-sell-notional-usd: ${BOT_MIN_SELL_NOTIONAL_USD:10.00}
+
+  # Strategy-first architecture. Deterministic exits/entries come before AI.
+  # AI is veto-only for entries and cannot invent trades in this mode.
+  strategy-mode-enabled: ${BOT_STRATEGY_MODE_ENABLED:true}
+  strategy-ai-veto-enabled: ${BOT_STRATEGY_AI_VETO_ENABLED:true}
+  strategy-quote-size-usd: ${BOT_STRATEGY_QUOTE_SIZE_USD:15.00}
+  strategy-stop-loss-percent: ${BOT_STRATEGY_STOP_LOSS_PERCENT:4.0}
+  strategy-take-profit-percent: ${BOT_STRATEGY_TAKE_PROFIT_PERCENT:8.0}
+  strategy-trailing-drawdown-percent: ${BOT_STRATEGY_TRAILING_DRAWDOWN_PERCENT:4.0}
+  strategy-min-trend7d-percent: ${BOT_STRATEGY_MIN_TREND7D_PERCENT:2.0}
+  strategy-min-recovery4h-percent: ${BOT_STRATEGY_MIN_RECOVERY4H_PERCENT:0.0}
+  strategy-max-entry24h-percent: ${BOT_STRATEGY_MAX_ENTRY24H_PERCENT:4.0}
+  strategy-max-entry-rsi: ${BOT_STRATEGY_MAX_ENTRY_RSI:60}
+  strategy-max-hold-hours: ${BOT_STRATEGY_MAX_HOLD_HOURS:168}
 
 openai:
   api-key: ${OPENAI_API_KEY:}
