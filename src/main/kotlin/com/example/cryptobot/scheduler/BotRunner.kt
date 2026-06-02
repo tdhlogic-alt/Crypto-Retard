@@ -55,7 +55,8 @@ class BotRunner(
 
             buildSnapshots()
                 .flatMap { snapshots ->
-                    when {
+                    ledger.recordDailyPaperSummary(snapshots).then(
+                        when {
                         props.strategyModeEnabled -> executeStrategyFirstPlan(snapshots)
                         props.agentEnabled -> {
                             agentClient.decidePortfolioPlan(snapshots)
@@ -86,6 +87,7 @@ class BotRunner(
                                 .then()
                         }
                     }
+                    )
                 }
                 .retryWhen(
                     Retry.backoff(2, Duration.ofSeconds(3))
@@ -166,12 +168,27 @@ class BotRunner(
             agentClient.decideStrategyVetoPlan(snapshots, aiGated)
                 .flatMap { vetoPlan ->
                     val approved = applyAiVeto(aiGated, vetoPlan.decisions)
-                    val blockedCount = aiGated.size - approved.size
+                    val blockedSignals = aiGated.filter { it !in approved }
+                    val blockedCount = blockedSignals.size
+                    val missedLedger = Flux.fromIterable(blockedSignals)
+                        .concatMap { signal ->
+                            val blockedSnapshot = signal.snapshotOrFallback(snapshotsByProduct, snapshots)
+                            ledger.recordMissedTrade(
+                                snapshot = blockedSnapshot,
+                                decisionType = signal.decision.actionName(),
+                                reason = "AI veto blocked deterministic strategy signal: ${signal.rationale}",
+                                quoteSizeUsd = (signal.decision as? TradingDecision.Buy)?.quoteSizeUsd,
+                                baseSize = (signal.decision as? TradingDecision.Sell)?.baseSize,
+                                reasonCode = signal.reasonCode,
+                            )
+                        }
+                        .then()
                     val alert = formatStrategySignalAlert(
                         title = "Strategy entries after AI veto: approved=${approved.size}, blocked=$blockedCount",
                         signals = approved,
                     )
-                    alerts.send(alert)
+                    missedLedger
+                        .then(alerts.send(alert))
                         .thenMany(Flux.fromIterable(approved))
                         .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
                         .then()
@@ -592,7 +609,7 @@ class BotRunner(
                                 )
 
                                 ledger.scorePendingOutcomes(productId, price)
-                                    .then(ledger.getPosition(productId, price))
+                                    .then(ledger.getEffectivePosition(productId, price, props.dryRun))
                                     .flatMap { position ->
                                         ledger.getReasonCodeStats(position.activeReasonCode, Instant.now().minus(30, ChronoUnit.DAYS))
                                             .map { reasonStats ->
@@ -678,6 +695,14 @@ class BotRunner(
             }
     }
 
+
+    private fun TradingDecision.actionName(): String = when (this) {
+        is TradingDecision.Buy -> "BUY"
+        is TradingDecision.Sell -> "SELL"
+        is TradingDecision.Rotate -> "ROTATE"
+        is TradingDecision.Skip -> "SKIP"
+    }
+
     private fun execute(
         snapshot: MarketSnapshot,
         decision: TradingDecision,
@@ -731,7 +756,20 @@ class BotRunner(
                         stopLossPercent = decision.buy.stopLossPercent,
                         maxHoldHours = decision.buy.maxHoldHours,
                     )
-                ).then(alerts.send(message)).thenReturn(Unit)
+                )
+                    .then(ledger.applyPaperSell(fundingSnapshot, decision.sell.baseSize, decision.sell.reasonCode, "DRY_RUN_ROTATE"))
+                    .then(ledger.applyPaperBuy(
+                        snapshot = targetSnapshot,
+                        quoteSizeUsd = decision.buy.quoteSizeUsd,
+                        reasonCode = decision.buy.reasonCode,
+                        thesis = decision.buy.thesis,
+                        invalidationCondition = decision.buy.invalidationCondition,
+                        profitTargetPercent = decision.buy.profitTargetPercent,
+                        stopLossPercent = decision.buy.stopLossPercent,
+                        maxHoldHours = decision.buy.maxHoldHours,
+                        source = "DRY_RUN_ROTATE",
+                    ))
+                    .then(alerts.send(message)).thenReturn(Unit)
             } else if (!props.liveTradingEnabled) {
                 val message = "🛑 LIVE ROTATE BLOCKED: liveTradingEnabled=false. Would have sold ${decision.sell.baseSize} of ${decision.sell.productId}, then bought ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}"
                 log.warn(message)
@@ -820,6 +858,16 @@ class BotRunner(
                         stopLossPercent = decision.stopLossPercent,
                         maxHoldHours = decision.maxHoldHours,
                     )
+                        .then(ledger.applyPaperBuy(
+                            snapshot = snapshot,
+                            quoteSizeUsd = decision.quoteSizeUsd,
+                            reasonCode = decision.reasonCode,
+                            thesis = decision.thesis,
+                            invalidationCondition = decision.invalidationCondition,
+                            profitTargetPercent = decision.profitTargetPercent,
+                            stopLossPercent = decision.stopLossPercent,
+                            maxHoldHours = decision.maxHoldHours,
+                        ))
                         .then(alerts.send(message))
                         .thenReturn(Unit)
                 }
@@ -948,6 +996,7 @@ class BotRunner(
                         baseSize = decision.baseSize,
                         reasonCode = decision.reasonCode,
                     )
+                        .then(ledger.applyPaperSell(snapshot, decision.baseSize, decision.reasonCode))
                         .then(alerts.send(message))
                         .thenReturn(Unit)
                 }
@@ -1046,6 +1095,7 @@ class BotRunner(
             quoteSizeUsd = decision.quoteSizeUsd,
             reasonCode = decision.reasonCode,
         )
+            .then(ledger.recordMissedTrade(snapshot, "BUY", message, quoteSizeUsd = decision.quoteSizeUsd, reasonCode = decision.reasonCode))
             .then(alerts.send(message))
             .thenReturn(Unit)
     }

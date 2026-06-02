@@ -21,6 +21,10 @@ class TradeLedgerClient(
 
     private val decisions = firestore.collection("trade_decisions")
     private val positions = firestore.collection("positions")
+    private val paperPositions = firestore.collection("paper_positions")
+    private val paperFills = firestore.collection("paper_fills")
+    private val missedTrades = firestore.collection("missed_trades")
+    private val dailyPaperSummaries = firestore.collection("daily_paper_summaries")
 
     fun record(
         snapshot: MarketSnapshot,
@@ -105,9 +109,220 @@ class TradeLedgerClient(
             .then()
     }
 
-    fun getPosition(productId: String, currentPrice: BigDecimal): Mono<PositionSnapshot> {
+    fun getEffectivePosition(productId: String, currentPrice: BigDecimal, paperMode: Boolean): Mono<PositionSnapshot> {
+        return if (paperMode) getPaperPosition(productId, currentPrice) else getPosition(productId, currentPrice)
+    }
+
+    fun getPaperPosition(productId: String, currentPrice: BigDecimal): Mono<PositionSnapshot> {
+        return readPosition(paperPositions, productId, currentPrice)
+    }
+
+    fun applyPaperBuy(
+        snapshot: MarketSnapshot,
+        quoteSizeUsd: BigDecimal,
+        reasonCode: String,
+        thesis: String = "",
+        invalidationCondition: String = "",
+        profitTargetPercent: BigDecimal = BigDecimal.ZERO,
+        stopLossPercent: BigDecimal = BigDecimal.ZERO,
+        maxHoldHours: Long = 0L,
+        source: String = "DRY_RUN",
+    ): Mono<Void> {
         return Mono.fromCallable {
-            val doc = positions.document(productId).get().get()
+            val estimatedFeeUsd = quoteSizeUsd.multiply(BigDecimal("0.006"))
+            val estimatedSlippageUsd = quoteSizeUsd.multiply(BigDecimal("0.002"))
+            val netQuoteUsd = quoteSizeUsd.subtract(estimatedFeeUsd).subtract(estimatedSlippageUsd).max(BigDecimal.ZERO)
+            val boughtQuantity = if (snapshot.price > BigDecimal.ZERO) {
+                netQuoteUsd.divide(snapshot.price, 12, RoundingMode.HALF_UP)
+            } else BigDecimal.ZERO
+
+            firestore.runTransaction { tx ->
+                val ref = paperPositions.document(snapshot.productId)
+                val doc = tx.get(ref).get()
+                val oldQuantity = doc.getString("quantity")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldTotalInvested = doc.getString("totalInvested")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldRealizedPnl = doc.getString("realizedPnlUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldBuyCount = doc.getLong("buyCount") ?: 0L
+                val oldSellCount = doc.getLong("sellCount") ?: 0L
+                val oldHighestPriceSeen = doc.getString("highestPriceSeen")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val newQuantity = oldQuantity + boughtQuantity
+                val newTotalInvested = oldTotalInvested + quoteSizeUsd
+                val newAvgCostBasis = if (newQuantity > BigDecimal.ZERO) newTotalInvested.divide(newQuantity, 12, RoundingMode.HALF_UP) else BigDecimal.ZERO
+                tx.set(ref, mapOf(
+                    "productId" to snapshot.productId,
+                    "quantity" to newQuantity.toPlainString(),
+                    "avgCostBasis" to newAvgCostBasis.toPlainString(),
+                    "totalInvested" to newTotalInvested.toPlainString(),
+                    "realizedPnlUsd" to oldRealizedPnl.toPlainString(),
+                    "highestPriceSeen" to maxOf(oldHighestPriceSeen, snapshot.price).toPlainString(),
+                    "activeReasonCode" to reasonCode,
+                    "activeThesis" to thesis,
+                    "activeInvalidationCondition" to invalidationCondition,
+                    "activeProfitTargetPercent" to profitTargetPercent.toPlainString(),
+                    "activeStopLossPercent" to stopLossPercent.toPlainString(),
+                    "activeMaxHoldHours" to maxHoldHours,
+                    "buyCount" to oldBuyCount + 1,
+                    "sellCount" to oldSellCount,
+                    "lastBuyAt" to Timestamp.now(),
+                    "updatedAt" to Timestamp.now(),
+                ), com.google.cloud.firestore.SetOptions.merge())
+                null
+            }.get()
+            paperFills.add(mapOf(
+                "createdAt" to Timestamp.now(),
+                "source" to source,
+                "productId" to snapshot.productId,
+                "side" to "BUY",
+                "price" to snapshot.price.toPlainString(),
+                "quoteSizeUsd" to quoteSizeUsd.toPlainString(),
+                "baseSize" to boughtQuantity.toPlainString(),
+                "estimatedFeeUsd" to estimatedFeeUsd.toPlainString(),
+                "estimatedSlippageUsd" to estimatedSlippageUsd.toPlainString(),
+                "reasonCode" to reasonCode,
+                "outcomeStatus" to "OPEN",
+            )).get()
+            null
+        }.subscribeOn(Schedulers.boundedElastic()).then()
+    }
+
+    fun applyPaperSell(snapshot: MarketSnapshot, baseSize: BigDecimal, reasonCode: String, source: String = "DRY_RUN"): Mono<Void> {
+        return Mono.fromCallable {
+            var realizedPnl = BigDecimal.ZERO
+            var sellQuantity = BigDecimal.ZERO
+            firestore.runTransaction { tx ->
+                val ref = paperPositions.document(snapshot.productId)
+                val doc = tx.get(ref).get()
+                val oldQuantity = doc.getString("quantity")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldAvgCostBasis = doc.getString("avgCostBasis")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldTotalInvested = doc.getString("totalInvested")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldRealizedPnl = doc.getString("realizedPnlUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldBuyCount = doc.getLong("buyCount") ?: 0L
+                val oldSellCount = doc.getLong("sellCount") ?: 0L
+                sellQuantity = minOf(baseSize, oldQuantity)
+                val grossProceeds = sellQuantity.multiply(snapshot.price)
+                val estimatedFeeUsd = grossProceeds.multiply(BigDecimal("0.006"))
+                val estimatedSlippageUsd = grossProceeds.multiply(BigDecimal("0.002"))
+                val netProceeds = grossProceeds.subtract(estimatedFeeUsd).subtract(estimatedSlippageUsd)
+                val costRemoved = sellQuantity.multiply(oldAvgCostBasis)
+                realizedPnl = netProceeds.subtract(costRemoved)
+                val newQuantity = oldQuantity.subtract(sellQuantity).max(BigDecimal.ZERO)
+                val newTotalInvested = oldTotalInvested.subtract(costRemoved).max(BigDecimal.ZERO)
+                val newAvgCostBasis = if (newQuantity > BigDecimal.ZERO) newTotalInvested.divide(newQuantity, 12, RoundingMode.HALF_UP) else BigDecimal.ZERO
+                tx.set(ref, mapOf(
+                    "productId" to snapshot.productId,
+                    "quantity" to newQuantity.toPlainString(),
+                    "avgCostBasis" to newAvgCostBasis.toPlainString(),
+                    "totalInvested" to newTotalInvested.toPlainString(),
+                    "realizedPnlUsd" to oldRealizedPnl.add(realizedPnl).toPlainString(),
+                    "lastSellReasonCode" to reasonCode,
+                    "buyCount" to oldBuyCount,
+                    "sellCount" to oldSellCount + 1,
+                    "lastSellAt" to Timestamp.now(),
+                    "updatedAt" to Timestamp.now(),
+                ).plus(if (newQuantity <= BigDecimal.ZERO) mapOf(
+                    "activeReasonCode" to "NO_CLEAR_EDGE",
+                    "activeThesis" to "",
+                    "activeInvalidationCondition" to "",
+                    "activeProfitTargetPercent" to BigDecimal.ZERO.toPlainString(),
+                    "activeStopLossPercent" to BigDecimal.ZERO.toPlainString(),
+                    "activeMaxHoldHours" to 0L,
+                ) else emptyMap()), com.google.cloud.firestore.SetOptions.merge())
+                null
+            }.get()
+            val grossProceeds = sellQuantity.multiply(snapshot.price)
+            paperFills.add(mapOf(
+                "createdAt" to Timestamp.now(),
+                "source" to source,
+                "productId" to snapshot.productId,
+                "side" to "SELL",
+                "price" to snapshot.price.toPlainString(),
+                "baseSize" to sellQuantity.toPlainString(),
+                "grossProceedsUsd" to grossProceeds.toPlainString(),
+                "realizedPnlUsd" to realizedPnl.toPlainString(),
+                "reasonCode" to reasonCode,
+                "outcomeStatus" to reasonCode,
+            )).get()
+            null
+        }.subscribeOn(Schedulers.boundedElastic()).then()
+    }
+
+    fun recordMissedTrade(snapshot: MarketSnapshot, decisionType: String, reason: String, quoteSizeUsd: BigDecimal? = null, baseSize: BigDecimal? = null, reasonCode: String? = null): Mono<Void> {
+        return Mono.fromCallable {
+            missedTrades.add(mapOf(
+                "createdAt" to Timestamp.now(),
+                "productId" to snapshot.productId,
+                "decisionType" to decisionType,
+                "reason" to reason,
+                "price" to snapshot.price.toPlainString(),
+                "quoteSizeUsd" to quoteSizeUsd?.toPlainString(),
+                "baseSize" to baseSize?.toPlainString(),
+                "reasonCode" to reasonCode,
+                "marketRegime" to snapshot.marketRegime,
+                "outcomeScored" to false,
+            )).get()
+            null
+        }.subscribeOn(Schedulers.boundedElastic()).then()
+    }
+
+    fun recordDailyPaperSummary(snapshots: List<MarketSnapshot>): Mono<Void> {
+        return Mono.fromCallable {
+            val byProduct = snapshots.associateBy { it.productId }
+            val positionsSnapshot = paperPositions.get().get()
+            var realizedPnl = BigDecimal.ZERO
+            var unrealizedPnl = BigDecimal.ZERO
+            var marketValue = BigDecimal.ZERO
+            var invested = BigDecimal.ZERO
+            val openPositions = mutableListOf<Map<String, Any?>>()
+            positionsSnapshot.documents.forEach { doc ->
+                val productId = doc.getString("productId") ?: doc.id
+                val price = byProduct[productId]?.price ?: BigDecimal.ZERO
+                val quantity = doc.getString("quantity")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val avgCostBasis = doc.getString("avgCostBasis")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val positionRealized = doc.getString("realizedPnlUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val cost = quantity.multiply(avgCostBasis)
+                val value = quantity.multiply(price)
+                val positionUnrealized = value.subtract(cost)
+                realizedPnl += positionRealized
+                unrealizedPnl += positionUnrealized
+                marketValue += value
+                invested += cost
+                if (quantity > BigDecimal.ZERO) {
+                    openPositions += mapOf(
+                        "productId" to productId,
+                        "quantity" to quantity.toPlainString(),
+                        "marketValueUsd" to value.toPlainString(),
+                        "unrealizedPnlUsd" to positionUnrealized.toPlainString(),
+                        "unrealizedPnlPercent" to if (cost > BigDecimal.ZERO) positionUnrealized.divide(cost, 6, RoundingMode.HALF_UP).multiply(BigDecimal("100")).toPlainString() else BigDecimal.ZERO.toPlainString(),
+                    )
+                }
+            }
+            val totalPnl = realizedPnl + unrealizedPnl
+            val today = Instant.now().toString().substring(0, 10)
+            dailyPaperSummaries.document(today).set(mapOf(
+                "createdAt" to Timestamp.now(),
+                "date" to today,
+                "realizedPnlUsd" to realizedPnl.toPlainString(),
+                "unrealizedPnlUsd" to unrealizedPnl.toPlainString(),
+                "totalPnlUsd" to totalPnl.toPlainString(),
+                "marketValueUsd" to marketValue.toPlainString(),
+                "costBasisUsd" to invested.toPlainString(),
+                "openPositionCount" to openPositions.size,
+                "openPositions" to openPositions,
+                "btc24hPercent" to (byProduct["BTC-USD"]?.trend24hPercent ?: BigDecimal.ZERO).toPlainString(),
+                "eth24hPercent" to (byProduct["ETH-USD"]?.trend24hPercent ?: BigDecimal.ZERO).toPlainString(),
+            ), com.google.cloud.firestore.SetOptions.merge()).get()
+            null
+        }.subscribeOn(Schedulers.boundedElastic()).then()
+    }
+
+
+    fun getPosition(productId: String, currentPrice: BigDecimal): Mono<PositionSnapshot> {
+        return readPosition(positions, productId, currentPrice)
+    }
+
+    private fun readPosition(collection: com.google.cloud.firestore.CollectionReference, productId: String, currentPrice: BigDecimal): Mono<PositionSnapshot> {
+        return Mono.fromCallable {
+            val doc = collection.document(productId).get().get()
             if (!doc.exists()) return@fromCallable PositionSnapshot.empty(productId)
 
             val quantity = doc.getString("quantity")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
