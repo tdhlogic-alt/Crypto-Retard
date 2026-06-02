@@ -55,37 +55,40 @@ class BotRunner(
 
             buildSnapshots()
                 .flatMap { snapshots ->
-                    when {
-                        props.strategyModeEnabled -> executeStrategyFirstPlan(snapshots)
-                        props.agentEnabled -> {
-                            agentClient.decidePortfolioPlan(snapshots)
-                                .flatMap { agentPlan ->
-                                    val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
-                                    decisions.forEachIndexed { index, agentDecision ->
-                                        log.info(
-                                            "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
-                                            index + 1,
-                                            agentDecision.productId,
-                                            agentDecision.action,
-                                            agentDecision.score,
-                                            agentDecision.confidence,
-                                            agentDecision.fundingProductId,
-                                            agentDecision.reason
-                                        )
-                                    }
+                    ledger.recordDailyPaperSummary(snapshots)
+                        .then(Mono.defer {
+                            when {
+                                props.strategyModeEnabled -> executeStrategyFirstPlan(snapshots)
+                                props.agentEnabled -> {
+                                    agentClient.decidePortfolioPlan(snapshots)
+                                        .flatMap { agentPlan ->
+                                            val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
+                                            decisions.forEachIndexed { index, agentDecision ->
+                                                log.info(
+                                                    "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
+                                                    index + 1,
+                                                    agentDecision.productId,
+                                                    agentDecision.action,
+                                                    agentDecision.score,
+                                                    agentDecision.confidence,
+                                                    agentDecision.fundingProductId,
+                                                    agentDecision.reason
+                                                )
+                                            }
 
-                                    executeAgentPlan(snapshots, decisions)
+                                            executeAgentPlan(snapshots, decisions)
+                                        }
                                 }
-                        }
-                        else -> {
-                            Flux.fromIterable(snapshots)
-                                .flatMap { snapshot ->
-                                    val decision = strategy.decide(snapshot)
-                                    execute(snapshot, decision)
+                                else -> {
+                                    Flux.fromIterable(snapshots)
+                                        .flatMap { snapshot ->
+                                            val decision = strategy.decide(snapshot)
+                                            execute(snapshot, decision)
+                                        }
+                                        .then(Mono.just(Unit))
                                 }
-                                .then()
-                        }
-                    }
+                            }
+                        })
                 }
                 .retryWhen(
                     Retry.backoff(2, Duration.ofSeconds(3))
@@ -138,9 +141,21 @@ class BotRunner(
 
         if (signals.isEmpty()) {
             val reason = "Strategy-first mode: no deterministic strategy edge. AI was not asked to invent a trade."
+            val report = buildStrategyFirstReport(
+                snapshots = snapshots,
+                signals = emptyList(),
+                executedSignals = emptyList(),
+                skippedActions = listOf(
+                    PlanActionReport.strategySkip(
+                        productId = snapshots.first().productId,
+                        detail = reason,
+                    ),
+                ),
+            )
             return execute(snapshots.first(), TradingDecision.Skip(reason), snapshotsByProduct)
+                .then(ledger.recordPortfolioRun(report))
                 .then(alerts.send("🧠 Strategy-first plan: SKIP. $reason"))
-                .thenReturn(Unit)
+                .then(Mono.just(Unit))
         }
 
         val hardExits = signals.filter { it.hardExit || !it.requiresAiApproval }
@@ -166,19 +181,44 @@ class BotRunner(
             agentClient.decideStrategyVetoPlan(snapshots, aiGated)
                 .flatMap { vetoPlan ->
                     val approved = applyAiVeto(aiGated, vetoPlan.decisions)
-                    val blockedCount = aiGated.size - approved.size
+                    val blockedSignals = aiGated.filter { it !in approved }
+                    val blockedCount = blockedSignals.size
+                    val missedLedger = Flux.fromIterable(blockedSignals)
+                        .concatMap { signal ->
+                            val blockedSnapshot = signal.snapshotOrFallback(snapshotsByProduct, snapshots)
+                            ledger.recordMissedTrade(
+                                snapshot = blockedSnapshot,
+                                decisionType = signal.decision.actionName(),
+                                reason = "AI veto blocked deterministic strategy signal: ${signal.rationale}",
+                                quoteSizeUsd = (signal.decision as? TradingDecision.Buy)?.quoteSizeUsd,
+                                baseSize = (signal.decision as? TradingDecision.Sell)?.baseSize,
+                                reasonCode = signal.decision.reasonCodeOrDefault(),
+                            )
+                        }
+                        .then()
                     val alert = formatStrategySignalAlert(
                         title = "Strategy entries after AI veto: approved=${approved.size}, blocked=$blockedCount",
                         signals = approved,
                     )
-                    alerts.send(alert)
+                    missedLedger
+                        .then(alerts.send(alert))
                         .thenMany(Flux.fromIterable(approved))
                         .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
                         .then()
                 }
         }
 
-        return hardExitExecution.then(aiGatedExecution).thenReturn(Unit)
+        val report = buildStrategyFirstReport(
+            snapshots = snapshots,
+            signals = signals,
+            executedSignals = hardExits + if (!props.strategyAiVetoEnabled || !props.agentEnabled) aiGated else emptyList(),
+            skippedActions = emptyList(),
+        )
+
+        return hardExitExecution
+            .then(aiGatedExecution)
+            .then(ledger.recordPortfolioRun(report))
+            .then(Mono.just(Unit))
     }
 
     private fun applyAiVeto(
@@ -396,6 +436,48 @@ class BotRunner(
         return PlanExecutionSelection(executable = accepted, skipped = skipped)
     }
 
+    private fun buildStrategyFirstReport(
+        snapshots: List<MarketSnapshot>,
+        signals: List<StrategySignal>,
+        executedSignals: List<StrategySignal>,
+        skippedActions: List<PlanActionReport>,
+    ): PortfolioRunReport {
+        val executedSet = executedSignals.toSet()
+        val signalActions = signals.map { signal ->
+            PlanActionReport.fromStrategySignal(
+                signal = signal,
+                status = if (signal in executedSet) "EXECUTED" else "PROPOSED",
+                detail = signal.rationale,
+            )
+        }
+        val actions = signalActions + skippedActions
+        return PortfolioRunReport(
+            createdAt = Instant.now(),
+            dryRun = props.dryRun,
+            liveTradingEnabled = props.liveTradingEnabled,
+            proposedActionCount = actions.size,
+            executedActionCount = actions.count { it.status == "EXECUTED" },
+            skippedActionCount = actions.count { it.status != "EXECUTED" },
+            actions = actions,
+            portfolioBefore = snapshots.sortedByDescending { it.cryptoValueUsd }.map { snapshot ->
+                PortfolioHoldingReport(
+                    productId = snapshot.productId,
+                    cryptoValueUsd = snapshot.cryptoValueUsd,
+                    allocationPercent = snapshot.portfolioAllocationPercent,
+                    unrealizedPnlUsd = snapshot.unrealizedPnlUsd,
+                    unrealizedPnlPercent = snapshot.unrealizedPnlPercent,
+                    change24hPercent = snapshot.change24hPercent,
+                    marketRegime = snapshot.marketRegime,
+                )
+            },
+            projectedPortfolio = projectPortfolioAfter(snapshots, emptyList()),
+            summary = buildPortfolioRunSummary(snapshots, actions),
+            topOpenLosers = buildTopOpenLosers(snapshots),
+            skipReasonCounts = buildSkipReasonCounts(actions),
+            baseline24h = buildBaseline24h(snapshots),
+        )
+    }
+
     private fun buildPlanExecutionReport(
         snapshots: List<MarketSnapshot>,
         selection: PlanExecutionSelection,
@@ -416,9 +498,15 @@ class BotRunner(
                     allocationPercent = snapshot.portfolioAllocationPercent,
                     unrealizedPnlUsd = snapshot.unrealizedPnlUsd,
                     unrealizedPnlPercent = snapshot.unrealizedPnlPercent,
+                    change24hPercent = snapshot.change24hPercent,
+                    marketRegime = snapshot.marketRegime,
                 )
             },
             projectedPortfolio = projectPortfolioAfter(snapshots, selection.executable),
+            summary = buildPortfolioRunSummary(snapshots, proposed),
+            topOpenLosers = buildTopOpenLosers(snapshots),
+            skipReasonCounts = buildSkipReasonCounts(proposed),
+            baseline24h = buildBaseline24h(snapshots),
         )
     }
 
@@ -475,9 +563,93 @@ class BotRunner(
                     } else BigDecimal.ZERO,
                     unrealizedPnlUsd = byProduct[productId]?.unrealizedPnlUsd ?: BigDecimal.ZERO,
                     unrealizedPnlPercent = byProduct[productId]?.unrealizedPnlPercent ?: BigDecimal.ZERO,
+                    change24hPercent = byProduct[productId]?.change24hPercent ?: BigDecimal.ZERO,
+                    marketRegime = byProduct[productId]?.marketRegime ?: "UNKNOWN",
                 )
             }
             .sortedByDescending { it.cryptoValueUsd }
+    }
+
+    private fun buildPortfolioRunSummary(
+        snapshots: List<MarketSnapshot>,
+        actions: List<PlanActionReport>,
+    ): PortfolioRunSummary {
+        val cashUsd = snapshots.firstOrNull()?.usdAvailable ?: BigDecimal.ZERO
+        val cryptoValueUsd = snapshots.sumOf { it.cryptoValueUsd }
+        val totalValueUsd = cashUsd + cryptoValueUsd
+        val unrealizedPnlUsd = snapshots.sumOf { it.unrealizedPnlUsd }
+        val realizedPnlUsd = snapshots.sumOf { it.realizedPnlUsd }
+        val buyUsd = actions.sumOf { if (it.action == "BUY" || it.action == "ROTATE") it.quoteSizeUsd else BigDecimal.ZERO }
+        val sellUsd = actions.sumOf { action ->
+            if (action.action == "SELL" || action.action == "ROTATE") {
+                val snapshot = snapshots.firstOrNull { it.productId == action.productId }
+                action.baseSize.multiply(snapshot?.price ?: BigDecimal.ZERO)
+            } else BigDecimal.ZERO
+        }
+
+        return PortfolioRunSummary(
+            totalValueUsd = totalValueUsd,
+            cashUsd = cashUsd,
+            cryptoValueUsd = cryptoValueUsd,
+            realizedPnlUsd = realizedPnlUsd,
+            unrealizedPnlUsd = unrealizedPnlUsd,
+            buyUsd = buyUsd,
+            sellUsd = sellUsd,
+            heldPositionCount = snapshots.count { it.cryptoValueUsd > BigDecimal.ZERO },
+        )
+    }
+
+    private fun buildTopOpenLosers(snapshots: List<MarketSnapshot>): List<PortfolioLoserReport> {
+        return snapshots
+            .filter { it.cryptoValueUsd > BigDecimal.ZERO && it.unrealizedPnlUsd < BigDecimal.ZERO }
+            .sortedBy { it.unrealizedPnlPercent }
+            .take(5)
+            .map {
+                PortfolioLoserReport(
+                    productId = it.productId,
+                    cryptoValueUsd = it.cryptoValueUsd,
+                    unrealizedPnlUsd = it.unrealizedPnlUsd,
+                    unrealizedPnlPercent = it.unrealizedPnlPercent,
+                    drawdownFromHighPercent = it.drawdownFromHighPercent,
+                    marketRegime = it.marketRegime,
+                )
+            }
+    }
+
+    private fun buildSkipReasonCounts(actions: List<PlanActionReport>): List<SkipReasonCount> {
+        return actions
+            .filter { it.status != "EXECUTED" }
+            .groupingBy { it.detail.take(140) }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .take(8)
+            .map { SkipReasonCount(reason = it.key, count = it.value) }
+    }
+
+    private fun buildBaseline24h(snapshots: List<MarketSnapshot>): List<Baseline24hReport> {
+        val held = snapshots.filter { it.cryptoValueUsd > BigDecimal.ZERO }
+        val heldValue = held.sumOf { it.cryptoValueUsd }
+        val heldWeighted24h = if (heldValue > BigDecimal.ZERO) {
+            held.sumOf { it.change24hPercent.multiply(it.cryptoValueUsd) }
+                .divide(heldValue, 6, RoundingMode.HALF_UP)
+        } else BigDecimal.ZERO
+
+        val baselines = mutableListOf<Baseline24hReport>()
+        snapshots.firstOrNull { it.productId == "BTC-USD" }?.let {
+            baselines += Baseline24hReport("BTC-USD", it.change24hPercent)
+        }
+        snapshots.firstOrNull { it.productId == "ETH-USD" }?.let {
+            baselines += Baseline24hReport("ETH-USD", it.change24hPercent)
+        }
+        if (held.isNotEmpty()) {
+            baselines += Baseline24hReport("HELD_WEIGHTED", heldWeighted24h)
+        }
+        val watchlistWeighted = if (snapshots.isNotEmpty()) {
+            snapshots.sumOf { it.change24hPercent }.divide(BigDecimal(snapshots.size), 6, RoundingMode.HALF_UP)
+        } else BigDecimal.ZERO
+        baselines += Baseline24hReport("WATCHLIST_AVG", watchlistWeighted)
+        return baselines
     }
 
     private fun formatPortfolioExecutionReport(report: PortfolioRunReport): String {
@@ -501,6 +673,15 @@ class BotRunner(
             .take(8)
             .joinToString("\n") { "- ${it.productId}: \$${it.cryptoValueUsd.setScale(2, RoundingMode.HALF_UP)} (${it.allocationPercent.setScale(1, RoundingMode.HALF_UP)}%)" }
             .ifBlank { "No crypto holdings projected" }
+        val loserLines = report.topOpenLosers
+            .joinToString("\n") { "- ${it.productId}: pnl=${it.unrealizedPnlPercent.setScale(2, RoundingMode.HALF_UP)}% (${'$'}${it.unrealizedPnlUsd.setScale(2, RoundingMode.HALF_UP)}) drawdown=${it.drawdownFromHighPercent.setScale(2, RoundingMode.HALF_UP)}% regime=${it.marketRegime}" }
+            .ifBlank { "None" }
+        val baselineLines = report.baseline24h
+            .joinToString("\n") { "- ${it.name}: ${it.change24hPercent.setScale(2, RoundingMode.HALF_UP)}%" }
+            .ifBlank { "None" }
+        val skipReasonLines = report.skipReasonCounts
+            .joinToString("\n") { "- ${it.count}x ${it.reason}" }
+            .ifBlank { "None" }
 
         val mode = if (report.dryRun) "DRY_RUN" else if (report.liveTradingEnabled) "LIVE" else "LIVE_BLOCKED"
 
@@ -510,7 +691,18 @@ class BotRunner(
             Proposed: ${report.proposedActionCount}
             Execution attempts: ${report.executedActionCount}
             Skipped/rejected: ${report.skippedActionCount}
-            Buy budget this run: max=${'$'}{props.maxTotalBuyUsdPerRun}, maxBuys=${props.maxBuysPerRun}, maxDailyBuys=${props.maxDailyLiveBuys}, maxDailyPerProduct=${props.maxDailyLiveBuysPerProduct}
+            Portfolio value: ${'$'}${report.summary.totalValueUsd.setScale(2, RoundingMode.HALF_UP)} cash=${'$'}${report.summary.cashUsd.setScale(2, RoundingMode.HALF_UP)} crypto=${'$'}${report.summary.cryptoValueUsd.setScale(2, RoundingMode.HALF_UP)} unrealized=${'$'}${report.summary.unrealizedPnlUsd.setScale(2, RoundingMode.HALF_UP)}
+            Paper flow this run: buys=${'$'}${report.summary.buyUsd.setScale(2, RoundingMode.HALF_UP)} sells=${'$'}${report.summary.sellUsd.setScale(2, RoundingMode.HALF_UP)} heldPositions=${report.summary.heldPositionCount}
+            Buy budget this run: max=${'$'}${props.maxTotalBuyUsdPerRun}, maxBuys=${props.maxBuysPerRun}, maxDailyBuys=${props.maxDailyLiveBuys}, maxDailyPerProduct=${props.maxDailyLiveBuysPerProduct}
+
+            24h baselines:
+            $baselineLines
+
+            Top open losers:
+            $loserLines
+
+            Top skip/rejection reasons:
+            $skipReasonLines
 
             EXECUTED / ATTEMPTED:
             $executedLines
@@ -592,7 +784,7 @@ class BotRunner(
                                 )
 
                                 ledger.scorePendingOutcomes(productId, price)
-                                    .then(ledger.getPosition(productId, price))
+                                    .then(ledger.getEffectivePosition(productId, price, props.dryRun))
                                     .flatMap { position ->
                                         ledger.getReasonCodeStats(position.activeReasonCode, Instant.now().minus(30, ChronoUnit.DAYS))
                                             .map { reasonStats ->
@@ -678,6 +870,21 @@ class BotRunner(
             }
     }
 
+
+    private fun TradingDecision.actionName(): String = when (this) {
+        is TradingDecision.Buy -> "BUY"
+        is TradingDecision.Sell -> "SELL"
+        is TradingDecision.Rotate -> "ROTATE"
+        is TradingDecision.Skip -> "SKIP"
+    }
+
+    private fun TradingDecision.reasonCodeOrDefault(): String = when (this) {
+        is TradingDecision.Buy -> reasonCode
+        is TradingDecision.Sell -> reasonCode
+        is TradingDecision.Rotate -> buy.reasonCode
+        is TradingDecision.Skip -> "NO_CLEAR_EDGE"
+    }
+
     private fun execute(
         snapshot: MarketSnapshot,
         decision: TradingDecision,
@@ -731,7 +938,20 @@ class BotRunner(
                         stopLossPercent = decision.buy.stopLossPercent,
                         maxHoldHours = decision.buy.maxHoldHours,
                     )
-                ).then(alerts.send(message)).thenReturn(Unit)
+                )
+                    .then(ledger.applyPaperSell(fundingSnapshot, decision.sell.baseSize, decision.sell.reasonCode, "DRY_RUN_ROTATE"))
+                    .then(ledger.applyPaperBuy(
+                        snapshot = targetSnapshot,
+                        quoteSizeUsd = decision.buy.quoteSizeUsd,
+                        reasonCode = decision.buy.reasonCode,
+                        thesis = decision.buy.thesis,
+                        invalidationCondition = decision.buy.invalidationCondition,
+                        profitTargetPercent = decision.buy.profitTargetPercent,
+                        stopLossPercent = decision.buy.stopLossPercent,
+                        maxHoldHours = decision.buy.maxHoldHours,
+                        source = "DRY_RUN_ROTATE",
+                    ))
+                    .then(alerts.send(message)).thenReturn(Unit)
             } else if (!props.liveTradingEnabled) {
                 val message = "🛑 LIVE ROTATE BLOCKED: liveTradingEnabled=false. Would have sold ${decision.sell.baseSize} of ${decision.sell.productId}, then bought ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}"
                 log.warn(message)
@@ -820,6 +1040,16 @@ class BotRunner(
                         stopLossPercent = decision.stopLossPercent,
                         maxHoldHours = decision.maxHoldHours,
                     )
+                        .then(ledger.applyPaperBuy(
+                            snapshot = snapshot,
+                            quoteSizeUsd = decision.quoteSizeUsd,
+                            reasonCode = decision.reasonCode,
+                            thesis = decision.thesis,
+                            invalidationCondition = decision.invalidationCondition,
+                            profitTargetPercent = decision.profitTargetPercent,
+                            stopLossPercent = decision.stopLossPercent,
+                            maxHoldHours = decision.maxHoldHours,
+                        ))
                         .then(alerts.send(message))
                         .thenReturn(Unit)
                 }
@@ -948,6 +1178,7 @@ class BotRunner(
                         baseSize = decision.baseSize,
                         reasonCode = decision.reasonCode,
                     )
+                        .then(ledger.applyPaperSell(snapshot, decision.baseSize, decision.reasonCode))
                         .then(alerts.send(message))
                         .thenReturn(Unit)
                 }
@@ -1046,6 +1277,7 @@ class BotRunner(
             quoteSizeUsd = decision.quoteSizeUsd,
             reasonCode = decision.reasonCode,
         )
+            .then(ledger.recordMissedTrade(snapshot, "BUY", message, quoteSizeUsd = decision.quoteSizeUsd, reasonCode = decision.reasonCode))
             .then(alerts.send(message))
             .thenReturn(Unit)
     }
@@ -1132,6 +1364,10 @@ data class PortfolioRunReport(
     val actions: List<PlanActionReport>,
     val portfolioBefore: List<PortfolioHoldingReport>,
     val projectedPortfolio: List<PortfolioHoldingReport>,
+    val summary: PortfolioRunSummary,
+    val topOpenLosers: List<PortfolioLoserReport>,
+    val skipReasonCounts: List<SkipReasonCount>,
+    val baseline24h: List<Baseline24hReport>,
 )
 
 data class PlanActionReport(
@@ -1160,6 +1396,61 @@ data class PlanActionReport(
     )
 
     companion object {
+        fun fromStrategySignal(signal: StrategySignal, status: String, detail: String): PlanActionReport {
+            return when (val decision = signal.decision) {
+                is TradingDecision.Buy -> PlanActionReport(
+                    action = "BUY",
+                    productId = decision.productId,
+                    status = status,
+                    detail = detail,
+                    score = BigDecimal.ZERO,
+                    confidence = BigDecimal.ZERO,
+                    quoteSizeUsd = decision.quoteSizeUsd,
+                    baseSize = BigDecimal.ZERO,
+                    fundingProductId = "",
+                    fundingBaseSize = BigDecimal.ZERO,
+                )
+                is TradingDecision.Sell -> PlanActionReport(
+                    action = "SELL",
+                    productId = decision.productId,
+                    status = status,
+                    detail = detail,
+                    score = BigDecimal.ZERO,
+                    confidence = BigDecimal.ZERO,
+                    quoteSizeUsd = BigDecimal.ZERO,
+                    baseSize = decision.baseSize,
+                    fundingProductId = "",
+                    fundingBaseSize = BigDecimal.ZERO,
+                )
+                is TradingDecision.Rotate -> PlanActionReport(
+                    action = "ROTATE",
+                    productId = decision.buy.productId,
+                    status = status,
+                    detail = detail,
+                    score = BigDecimal.ZERO,
+                    confidence = BigDecimal.ZERO,
+                    quoteSizeUsd = decision.buy.quoteSizeUsd,
+                    baseSize = decision.sell.baseSize,
+                    fundingProductId = decision.sell.productId,
+                    fundingBaseSize = decision.sell.baseSize,
+                )
+                is TradingDecision.Skip -> strategySkip(productId = "UNKNOWN", detail = detail)
+            }
+        }
+
+        fun strategySkip(productId: String, detail: String): PlanActionReport = PlanActionReport(
+            action = "SKIP",
+            productId = productId,
+            status = "SKIPPED",
+            detail = detail,
+            score = BigDecimal.ZERO,
+            confidence = BigDecimal.ZERO,
+            quoteSizeUsd = BigDecimal.ZERO,
+            baseSize = BigDecimal.ZERO,
+            fundingProductId = "",
+            fundingBaseSize = BigDecimal.ZERO,
+        )
+
         internal fun from(action: ValidatedPlanAction, status: String, detail: String): PlanActionReport {
             val agentDecision = action.agentDecision
             return PlanActionReport(
@@ -1184,6 +1475,8 @@ data class PortfolioHoldingReport(
     val allocationPercent: BigDecimal,
     val unrealizedPnlUsd: BigDecimal,
     val unrealizedPnlPercent: BigDecimal,
+    val change24hPercent: BigDecimal,
+    val marketRegime: String,
 ) {
     fun asMap(): Map<String, Any?> = mapOf(
         "productId" to productId,
@@ -1191,5 +1484,67 @@ data class PortfolioHoldingReport(
         "allocationPercent" to allocationPercent.toPlainString(),
         "unrealizedPnlUsd" to unrealizedPnlUsd.toPlainString(),
         "unrealizedPnlPercent" to unrealizedPnlPercent.toPlainString(),
+        "change24hPercent" to change24hPercent.toPlainString(),
+        "marketRegime" to marketRegime,
+    )
+}
+
+data class PortfolioRunSummary(
+    val totalValueUsd: BigDecimal,
+    val cashUsd: BigDecimal,
+    val cryptoValueUsd: BigDecimal,
+    val realizedPnlUsd: BigDecimal,
+    val unrealizedPnlUsd: BigDecimal,
+    val buyUsd: BigDecimal,
+    val sellUsd: BigDecimal,
+    val heldPositionCount: Int,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "totalValueUsd" to totalValueUsd.toPlainString(),
+        "cashUsd" to cashUsd.toPlainString(),
+        "cryptoValueUsd" to cryptoValueUsd.toPlainString(),
+        "realizedPnlUsd" to realizedPnlUsd.toPlainString(),
+        "unrealizedPnlUsd" to unrealizedPnlUsd.toPlainString(),
+        "buyUsd" to buyUsd.toPlainString(),
+        "sellUsd" to sellUsd.toPlainString(),
+        "heldPositionCount" to heldPositionCount,
+    )
+}
+
+data class PortfolioLoserReport(
+    val productId: String,
+    val cryptoValueUsd: BigDecimal,
+    val unrealizedPnlUsd: BigDecimal,
+    val unrealizedPnlPercent: BigDecimal,
+    val drawdownFromHighPercent: BigDecimal,
+    val marketRegime: String,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "productId" to productId,
+        "cryptoValueUsd" to cryptoValueUsd.toPlainString(),
+        "unrealizedPnlUsd" to unrealizedPnlUsd.toPlainString(),
+        "unrealizedPnlPercent" to unrealizedPnlPercent.toPlainString(),
+        "drawdownFromHighPercent" to drawdownFromHighPercent.toPlainString(),
+        "marketRegime" to marketRegime,
+    )
+}
+
+data class SkipReasonCount(
+    val reason: String,
+    val count: Int,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "reason" to reason,
+        "count" to count,
+    )
+}
+
+data class Baseline24hReport(
+    val name: String,
+    val change24hPercent: BigDecimal,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "name" to name,
+        "change24hPercent" to change24hPercent.toPlainString(),
     )
 }
