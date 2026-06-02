@@ -55,39 +55,40 @@ class BotRunner(
 
             buildSnapshots()
                 .flatMap { snapshots ->
-                    ledger.recordDailyPaperSummary(snapshots).then(
-                        when {
-                        props.strategyModeEnabled -> executeStrategyFirstPlan(snapshots)
-                        props.agentEnabled -> {
-                            agentClient.decidePortfolioPlan(snapshots)
-                                .flatMap { agentPlan ->
-                                    val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
-                                    decisions.forEachIndexed { index, agentDecision ->
-                                        log.info(
-                                            "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
-                                            index + 1,
-                                            agentDecision.productId,
-                                            agentDecision.action,
-                                            agentDecision.score,
-                                            agentDecision.confidence,
-                                            agentDecision.fundingProductId,
-                                            agentDecision.reason
-                                        )
-                                    }
+                    ledger.recordDailyPaperSummary(snapshots)
+                        .then(Mono.defer {
+                            when {
+                                props.strategyModeEnabled -> executeStrategyFirstPlan(snapshots)
+                                props.agentEnabled -> {
+                                    agentClient.decidePortfolioPlan(snapshots)
+                                        .flatMap { agentPlan ->
+                                            val decisions = agentPlan.decisions.take(props.maxActionsPerRun)
+                                            decisions.forEachIndexed { index, agentDecision ->
+                                                log.info(
+                                                    "Portfolio agent decision[{}]: product={} action={} score={} confidence={} fundingProduct={} reason={}",
+                                                    index + 1,
+                                                    agentDecision.productId,
+                                                    agentDecision.action,
+                                                    agentDecision.score,
+                                                    agentDecision.confidence,
+                                                    agentDecision.fundingProductId,
+                                                    agentDecision.reason
+                                                )
+                                            }
 
-                                    executeAgentPlan(snapshots, decisions)
+                                            executeAgentPlan(snapshots, decisions)
+                                        }
                                 }
-                        }
-                        else -> {
-                            Flux.fromIterable(snapshots)
-                                .flatMap { snapshot ->
-                                    val decision = strategy.decide(snapshot)
-                                    execute(snapshot, decision)
+                                else -> {
+                                    Flux.fromIterable(snapshots)
+                                        .flatMap { snapshot ->
+                                            val decision = strategy.decide(snapshot)
+                                            execute(snapshot, decision)
+                                        }
+                                        .then(Mono.just(Unit))
                                 }
-                                .then()
-                        }
-                    }
-                    )
+                            }
+                        })
                 }
                 .retryWhen(
                     Retry.backoff(2, Duration.ofSeconds(3))
@@ -179,7 +180,7 @@ class BotRunner(
                                 reason = "AI veto blocked deterministic strategy signal: ${signal.rationale}",
                                 quoteSizeUsd = (signal.decision as? TradingDecision.Buy)?.quoteSizeUsd,
                                 baseSize = (signal.decision as? TradingDecision.Sell)?.baseSize,
-                                reasonCode = signal.reasonCode,
+                                reasonCode = signal.decision.reasonCodeOrDefault(),
                             )
                         }
                         .then()
@@ -701,6 +702,13 @@ class BotRunner(
         is TradingDecision.Sell -> "SELL"
         is TradingDecision.Rotate -> "ROTATE"
         is TradingDecision.Skip -> "SKIP"
+    }
+
+    private fun TradingDecision.reasonCodeOrDefault(): String = when (this) {
+        is TradingDecision.Buy -> reasonCode
+        is TradingDecision.Sell -> reasonCode
+        is TradingDecision.Rotate -> buy.reasonCode
+        is TradingDecision.Skip -> "NO_CLEAR_EDGE"
     }
 
     private fun execute(
