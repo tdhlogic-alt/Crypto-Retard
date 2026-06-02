@@ -94,6 +94,10 @@ class TradeLedgerClient(
                 "actions" to report.actions.map { it.asMap() },
                 "portfolioBefore" to report.portfolioBefore.map { it.asMap() },
                 "projectedPortfolio" to report.projectedPortfolio.map { it.asMap() },
+                "summary" to report.summary.asMap(),
+                "topOpenLosers" to report.topOpenLosers.map { it.asMap() },
+                "skipReasonCounts" to report.skipReasonCounts.map { it.asMap() },
+                "baseline24h" to report.baseline24h.map { it.asMap() },
             )
 
             firestore.collection("portfolio_runs").add(doc).get()
