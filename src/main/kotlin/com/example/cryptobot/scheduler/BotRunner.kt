@@ -328,7 +328,7 @@ class BotRunner(
             .then(executionMono)
             .then(ledger.recordPortfolioRun(report))
             .then(alerts.send(formatPortfolioExecutionReport(report)))
-            .thenReturn(Unit)
+            .then(Mono.just(Unit))
     }
 
     private fun selectExecutableActions(
@@ -898,7 +898,7 @@ class BotRunner(
                 decisionType = "SKIP",
                 reason = decision.reason,
                 dryRun = props.dryRun,
-            ).thenReturn(Unit)
+            ).then(Mono.just(Unit))
         }
 
         is TradingDecision.Rotate -> {
@@ -913,7 +913,7 @@ class BotRunner(
                     decisionType = "BLOCKED_ROTATE",
                     reason = message,
                     dryRun = props.dryRun,
-                ).then(alerts.send(message)).thenReturn(Unit)
+                ).then(alerts.send(message)).then(Mono.just(Unit))
             } else if (props.dryRun) {
                 val message = "🧪 DRY RUN: would ROTATE by selling ${decision.sell.baseSize} of ${decision.sell.productId}, then buying ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}. Reason: ${decision.reason}"
                 log.warn(message)
@@ -951,7 +951,7 @@ class BotRunner(
                         maxHoldHours = decision.buy.maxHoldHours,
                         source = "DRY_RUN_ROTATE",
                     ))
-                    .then(alerts.send(message)).thenReturn(Unit)
+                    .then(alerts.send(message)).then(Mono.just(Unit))
             } else if (!props.liveTradingEnabled) {
                 val message = "🛑 LIVE ROTATE BLOCKED: liveTradingEnabled=false. Would have sold ${decision.sell.baseSize} of ${decision.sell.productId}, then bought ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}"
                 log.warn(message)
@@ -963,7 +963,7 @@ class BotRunner(
                     baseSize = decision.sell.baseSize,
                     quoteSizeUsd = decision.buy.quoteSizeUsd,
                     reasonCode = "REBALANCE",
-                ).then(alerts.send(message)).thenReturn(Unit)
+                ).then(alerts.send(message)).then(Mono.just(Unit))
             } else {
                 val message = "🚨 LIVE ROTATE: SELL ${decision.sell.baseSize} of ${decision.sell.productId}, then BUY ${decision.buy.quoteSizeUsd} of ${decision.buy.productId}. Reason: ${decision.reason}"
                 log.warn(message)
@@ -1017,7 +1017,7 @@ class BotRunner(
                             } else Mono.empty()
                         )
                     }
-                    .thenReturn(Unit)
+                    .then(Mono.just(Unit))
             }
         }
 
@@ -1051,7 +1051,7 @@ class BotRunner(
                             maxHoldHours = decision.maxHoldHours,
                         ))
                         .then(alerts.send(message))
-                        .thenReturn(Unit)
+                        .then(Mono.just(Unit))
                 }
 
                 !props.liveTradingEnabled -> {
@@ -1066,7 +1066,7 @@ class BotRunner(
                         quoteSizeUsd = decision.quoteSizeUsd,
                     )
                         .then(alerts.send(message))
-                        .thenReturn(Unit)
+                        .then(Mono.just(Unit))
                 }
 
                 decision.quoteSizeUsd > props.maxBuyQuoteSizeUsd -> {
@@ -1081,7 +1081,7 @@ class BotRunner(
                         quoteSizeUsd = decision.quoteSizeUsd,
                     )
                         .then(alerts.send(message))
-                        .thenReturn(Unit)
+                        .then(Mono.just(Unit))
                 }
 
                 else -> {
@@ -1155,7 +1155,7 @@ class BotRunner(
                                                             } else Mono.empty()
                                                         )
                                                     }
-                                                    .thenReturn(Unit)
+                                                    .then(Mono.just(Unit))
                                             }
                                         }
                                     }
@@ -1180,7 +1180,7 @@ class BotRunner(
                     )
                         .then(ledger.applyPaperSell(snapshot, decision.baseSize, decision.reasonCode))
                         .then(alerts.send(message))
-                        .thenReturn(Unit)
+                        .then(Mono.just(Unit))
                 }
 
                 !props.liveTradingEnabled -> {
@@ -1195,7 +1195,7 @@ class BotRunner(
                         baseSize = decision.baseSize,
                     )
                         .then(alerts.send(message))
-                        .thenReturn(Unit)
+                        .then(Mono.just(Unit))
                 }
 
                 decision.baseSize > snapshot.cryptoBalance -> {
@@ -1210,7 +1210,7 @@ class BotRunner(
                         baseSize = decision.baseSize,
                     )
                         .then(alerts.send(message))
-                        .thenReturn(Unit)
+                        .then(Mono.just(Unit))
                 }
 
                 else -> {
@@ -1230,7 +1230,7 @@ class BotRunner(
                                 baseSize = decision.baseSize,
                             )
                                 .then(alerts.send(message))
-                                .thenReturn(Unit)
+                                .then(Mono.just(Unit))
                         }
 
                         else -> {
@@ -1253,7 +1253,7 @@ class BotRunner(
                                         if (response.success) ledger.applyLiveSell(snapshot, decision.baseSize, decision.reasonCode) else Mono.empty()
                                     )
                                 }
-                                .thenReturn(Unit)
+                                .then(Mono.just(Unit))
                         }
                     }
                 }
@@ -1279,7 +1279,7 @@ class BotRunner(
         )
             .then(ledger.recordMissedTrade(snapshot, "BUY", message, quoteSizeUsd = decision.quoteSizeUsd, reasonCode = decision.reasonCode))
             .then(alerts.send(message))
-            .thenReturn(Unit)
+            .then(Mono.just(Unit))
     }
 
     private fun classifyMarketRegime(

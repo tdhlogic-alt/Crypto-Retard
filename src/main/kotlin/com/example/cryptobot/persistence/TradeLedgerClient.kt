@@ -24,6 +24,7 @@ class TradeLedgerClient(
     private val paperPositions = firestore.collection("paper_positions")
     private val paperFills = firestore.collection("paper_fills")
     private val missedTrades = firestore.collection("missed_trades")
+    private val paperAccounts = firestore.collection("paper_accounts")
     private val dailyPaperSummaries = firestore.collection("daily_paper_summaries")
 
     fun record(
@@ -121,6 +122,23 @@ class TradeLedgerClient(
         return readPosition(paperPositions, productId, currentPrice)
     }
 
+    private fun readPaperCash(tx: com.google.cloud.firestore.Transaction, fallbackCash: BigDecimal): BigDecimal {
+        val accountDoc = tx.get(paperAccounts.document("default")).get()
+        return accountDoc.getString("cashBalanceUsd")?.toBigDecimalOrNull() ?: fallbackCash
+    }
+
+    private fun writePaperCash(tx: com.google.cloud.firestore.Transaction, cashBalanceUsd: BigDecimal) {
+        tx.set(
+            paperAccounts.document("default"),
+            mapOf(
+                "accountId" to "default",
+                "cashBalanceUsd" to cashBalanceUsd.max(BigDecimal.ZERO).toPlainString(),
+                "updatedAt" to Timestamp.now(),
+            ),
+            com.google.cloud.firestore.SetOptions.merge(),
+        )
+    }
+
     fun applyPaperBuy(
         snapshot: MarketSnapshot,
         quoteSizeUsd: BigDecimal,
@@ -149,6 +167,8 @@ class TradeLedgerClient(
                 val oldBuyCount = doc.getLong("buyCount") ?: 0L
                 val oldSellCount = doc.getLong("sellCount") ?: 0L
                 val oldHighestPriceSeen = doc.getString("highestPriceSeen")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                val oldCashBalance = readPaperCash(tx, snapshot.usdAvailable)
+                writePaperCash(tx, oldCashBalance.subtract(quoteSizeUsd))
                 val newQuantity = oldQuantity + boughtQuantity
                 val newTotalInvested = oldTotalInvested + quoteSizeUsd
                 val newAvgCostBasis = if (newQuantity > BigDecimal.ZERO) newTotalInvested.divide(newQuantity, 12, RoundingMode.HALF_UP) else BigDecimal.ZERO
@@ -207,6 +227,8 @@ class TradeLedgerClient(
                 val estimatedFeeUsd = grossProceeds.multiply(BigDecimal("0.006"))
                 val estimatedSlippageUsd = grossProceeds.multiply(BigDecimal("0.002"))
                 val netProceeds = grossProceeds.subtract(estimatedFeeUsd).subtract(estimatedSlippageUsd)
+                val oldCashBalance = readPaperCash(tx, snapshot.usdAvailable)
+                writePaperCash(tx, oldCashBalance.add(netProceeds))
                 val costRemoved = sellQuantity.multiply(oldAvgCostBasis)
                 realizedPnl = netProceeds.subtract(costRemoved)
                 val newQuantity = oldQuantity.subtract(sellQuantity).max(BigDecimal.ZERO)
@@ -272,6 +294,8 @@ class TradeLedgerClient(
         return Mono.fromCallable {
             val byProduct = snapshots.associateBy { it.productId }
             val positionsSnapshot = paperPositions.get().get()
+            val cashBalanceUsd = paperAccounts.document("default").get().get()
+                .getString("cashBalanceUsd")?.toBigDecimalOrNull() ?: (snapshots.firstOrNull()?.usdAvailable ?: BigDecimal.ZERO)
             var realizedPnl = BigDecimal.ZERO
             var unrealizedPnl = BigDecimal.ZERO
             var marketValue = BigDecimal.ZERO
@@ -308,7 +332,9 @@ class TradeLedgerClient(
                 "realizedPnlUsd" to realizedPnl.toPlainString(),
                 "unrealizedPnlUsd" to unrealizedPnl.toPlainString(),
                 "totalPnlUsd" to totalPnl.toPlainString(),
+                "cashBalanceUsd" to cashBalanceUsd.toPlainString(),
                 "marketValueUsd" to marketValue.toPlainString(),
+                "totalEquityUsd" to cashBalanceUsd.add(marketValue).toPlainString(),
                 "costBasisUsd" to invested.toPlainString(),
                 "openPositionCount" to openPositions.size,
                 "openPositions" to openPositions,
