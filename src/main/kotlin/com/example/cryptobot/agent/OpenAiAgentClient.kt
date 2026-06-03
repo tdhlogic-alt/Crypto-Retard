@@ -171,7 +171,7 @@ class OpenAiAgentClient(
             - fundingReason: concise reason for funding sell, otherwise empty string
             - confidence: 0.0-1.0
             - score: 0-100 opportunity score for the primary action
-            - reasonCode: one of OVERSOLD_BOUNCE, BREAKOUT_CONTINUATION, MOMENTUM_REVERSAL, PROFIT_PROTECTION, TRAILING_STOP, STOP_LOSS, THESIS_INVALIDATED, REBALANCE, NO_CLEAR_EDGE
+            - reasonCode: one of TREND_PULLBACK, OVERSOLD_BOUNCE, BREAKOUT_CONTINUATION, MOMENTUM_ACCELERATION, PROFIT_PROTECTION, TRAILING_STOP, STOP_LOSS, THESIS_INVALIDATED, REBALANCE, RELATIVE_STRENGTH_ROTATION_BUY, RELATIVE_STRENGTH_ROTATION_SELL, NO_CLEAR_EDGE
             - thesis/invalidationCondition/profitTargetPercent/stopLossPercent/maxHoldHours: required for BUY/ROTATE target; otherwise empty/0.
             - reason: <= ${botProps.maxAiReasonLength} chars.
 
@@ -357,8 +357,9 @@ class OpenAiAgentClient(
             "fundingBaseSize" to mapOf("type" to "string"),
             "fundingReason" to mapOf("type" to "string"),
             "reasonCode" to mapOf("type" to "string", "enum" to listOf(
-                "OVERSOLD_BOUNCE", "BREAKOUT_CONTINUATION", "MOMENTUM_REVERSAL", "PROFIT_PROTECTION",
-                "TRAILING_STOP", "STOP_LOSS", "THESIS_INVALIDATED", "REBALANCE", "NO_CLEAR_EDGE"
+                "TREND_PULLBACK", "OVERSOLD_BOUNCE", "BREAKOUT_CONTINUATION", "MOMENTUM_ACCELERATION",
+                "PROFIT_PROTECTION", "TRAILING_STOP", "STOP_LOSS", "THESIS_INVALIDATED", "REBALANCE",
+                "RELATIVE_STRENGTH_ROTATION_BUY", "RELATIVE_STRENGTH_ROTATION_SELL", "NO_CLEAR_EDGE"
             )),
             "thesis" to mapOf("type" to "string"),
             "invalidationCondition" to mapOf("type" to "string"),

@@ -53,7 +53,7 @@ class AgentDecisionValidator(
             snapshot.marketRegime == "CRASH" -> TradingDecision.Skip("Agent BUY rejected: market regime is CRASH")
             snapshot.marketRegime == "BEAR_TREND" && decision.score < props.bearTrendMinBuyScore -> TradingDecision.Skip("Agent BUY rejected: BEAR_TREND requires score >= ${props.bearTrendMinBuyScore}; score=${decision.score}")
             decision.reasonCode == "OVERSOLD_BOUNCE" && snapshot.rsi14 > props.oversoldBounceMaxRsi -> TradingDecision.Skip("Agent BUY rejected: OVERSOLD_BOUNCE requires RSI <= ${props.oversoldBounceMaxRsi}; rsi=${snapshot.rsi14}")
-            decision.reasonCode == "OVERSOLD_BOUNCE" && (snapshot.trend1hPercent <= props.oversoldBounceMinRecoveryTrendPercent || snapshot.trend4hPercent <= props.oversoldBounceMinRecoveryTrendPercent) -> TradingDecision.Skip("Agent BUY rejected: OVERSOLD_BOUNCE requires 1h and 4h recovery trends > ${props.oversoldBounceMinRecoveryTrendPercent}; 1h=${snapshot.trend1hPercent}% 4h=${snapshot.trend4hPercent}%")
+            decision.reasonCode == "OVERSOLD_BOUNCE" && (snapshot.trend1hPercent < props.oversoldBounceMinRecoveryTrendPercent || snapshot.trend4hPercent < props.oversoldBounceMinRecoveryTrendPercent) -> TradingDecision.Skip("Agent BUY rejected: OVERSOLD_BOUNCE requires 1h and 4h recovery trends >= ${props.oversoldBounceMinRecoveryTrendPercent}; 1h=${snapshot.trend1hPercent}% 4h=${snapshot.trend4hPercent}%")
             else -> TradingDecision.Buy(
                 productId = decision.productId,
                 quoteSizeUsd = decision.quoteSizeUsd,
