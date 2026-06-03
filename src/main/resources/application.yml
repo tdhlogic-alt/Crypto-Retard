@@ -67,7 +67,7 @@ bot:
   max-ai-reason-length: ${BOT_MAX_AI_REASON_LENGTH:240}
 
   # Level 2 portfolio rotation: allows the agent to sell a weak held asset to fund a stronger BUY.
-  level2-rotation-enabled: ${BOT_LEVEL2_ROTATION_ENABLED:false}
+  level2-rotation-enabled: ${BOT_LEVEL2_ROTATION_ENABLED:true}
   min-rotation-edge-score: ${BOT_MIN_ROTATION_EDGE_SCORE:80}
   min-rotation-score-gap: ${BOT_MIN_ROTATION_SCORE_GAP:15}
   max-rotation-sell-percent: ${BOT_MAX_ROTATION_SELL_PERCENT:75.0}
@@ -77,7 +77,7 @@ bot:
   max-actions-per-run: ${BOT_MAX_ACTIONS_PER_RUN:2}
   max-buys-per-run: ${BOT_MAX_BUYS_PER_RUN:1}
   max-sells-per-run: ${BOT_MAX_SELLS_PER_RUN:1}
-  max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:0}
+  max-rotations-per-run: ${BOT_MAX_ROTATIONS_PER_RUN:1}
   max-total-buy-usd-per-run: ${BOT_MAX_TOTAL_BUY_USD_PER_RUN:80.00}
   max-daily-live-buys-per-product: ${BOT_MAX_DAILY_LIVE_BUYS_PER_PRODUCT:2}
 
@@ -89,6 +89,16 @@ bot:
   bear-trend-min-buy-score: ${BOT_BEAR_TREND_MIN_BUY_SCORE:90}
   oversold-bounce-max-rsi: ${BOT_OVERSOLD_BOUNCE_MAX_RSI:35}
   oversold-bounce-min-recovery-trend-percent: ${BOT_OVERSOLD_BOUNCE_MIN_RECOVERY_TREND_PERCENT:0.0}
+  oversold-bounce-max-price-to24h-low-percent: ${BOT_OVERSOLD_BOUNCE_MAX_PRICE_TO24H_LOW_PERCENT:103.0}
+  breakout-min-trend7d-percent: ${BOT_BREAKOUT_MIN_TREND7D_PERCENT:5.0}
+  breakout-min-trend24h-percent: ${BOT_BREAKOUT_MIN_TREND24H_PERCENT:1.5}
+  breakout-min-price-to24h-high-percent: ${BOT_BREAKOUT_MIN_PRICE_TO24H_HIGH_PERCENT:98.0}
+  breakout-max-rsi: ${BOT_BREAKOUT_MAX_RSI:72}
+  momentum-min-trend1h-percent: ${BOT_MOMENTUM_MIN_TREND1H_PERCENT:0.4}
+  momentum-min-trend4h-percent: ${BOT_MOMENTUM_MIN_TREND4H_PERCENT:1.0}
+  momentum-min-trend24h-percent: ${BOT_MOMENTUM_MIN_TREND24H_PERCENT:2.0}
+  momentum-max-rsi: ${BOT_MOMENTUM_MAX_RSI:75}
+  rotation-max-funding-pnl-percent: ${BOT_ROTATION_MAX_FUNDING_PNL_PERCENT:2.0}
   min-sell-notional-usd: ${BOT_MIN_SELL_NOTIONAL_USD:10.00}
 
   # Strategy-first architecture. Deterministic exits/entries come before AI.
@@ -96,6 +106,9 @@ bot:
   strategy-mode-enabled: ${BOT_STRATEGY_MODE_ENABLED:true}
   strategy-ai-veto-enabled: ${BOT_STRATEGY_AI_VETO_ENABLED:true}
   strategy-quote-size-usd: ${BOT_STRATEGY_QUOTE_SIZE_USD:15.00}
+  strategy-high-conviction-quote-size-usd: ${BOT_STRATEGY_HIGH_CONVICTION_QUOTE_SIZE_USD:25.00}
+  strategy-high-conviction-min-score: ${BOT_STRATEGY_HIGH_CONVICTION_MIN_SCORE:90}
+  strategy-performance-min-sample: ${BOT_STRATEGY_PERFORMANCE_MIN_SAMPLE:5}
   strategy-stop-loss-percent: ${BOT_STRATEGY_STOP_LOSS_PERCENT:4.0}
   strategy-take-profit-percent: ${BOT_STRATEGY_TAKE_PROFIT_PERCENT:8.0}
   strategy-trailing-drawdown-percent: ${BOT_STRATEGY_TRAILING_DRAWDOWN_PERCENT:4.0}
