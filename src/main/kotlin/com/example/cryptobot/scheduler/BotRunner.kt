@@ -161,22 +161,22 @@ class BotRunner(
         val hardExits = signals.filter { it.hardExit || !it.requiresAiApproval }
         val aiGated = signals.filter { it.requiresAiApproval && !it.hardExit }
 
-        val hardExitExecution = if (hardExits.isEmpty()) {
-            Mono.empty()
+        val hardExitExecution: Mono<List<StrategySignal>> = if (hardExits.isEmpty()) {
+            Mono.just(emptyList())
         } else {
             alerts.send(formatStrategySignalAlert("Deterministic hard exits", hardExits))
                 .thenMany(Flux.fromIterable(hardExits))
                 .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
-                .then()
+                .then(Mono.just(hardExits))
         }
 
-        val aiGatedExecution = if (aiGated.isEmpty()) {
-            Mono.empty()
+        val aiGatedExecution: Mono<List<StrategySignal>> = if (aiGated.isEmpty()) {
+            Mono.just(emptyList())
         } else if (!props.strategyAiVetoEnabled || !props.agentEnabled) {
             alerts.send(formatStrategySignalAlert("Deterministic entries without AI veto", aiGated))
                 .thenMany(Flux.fromIterable(aiGated))
                 .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
-                .then()
+                .then(Mono.just(aiGated))
         } else {
             agentClient.decideStrategyVetoPlan(snapshots, aiGated)
                 .flatMap { vetoPlan ->
@@ -204,20 +204,22 @@ class BotRunner(
                         .then(alerts.send(alert))
                         .thenMany(Flux.fromIterable(approved))
                         .concatMap { signal -> execute(signal.snapshotOrFallback(snapshotsByProduct, snapshots), signal.decision, snapshotsByProduct) }
-                        .then()
+                        .then(Mono.just(approved))
                 }
         }
 
-        val report = buildStrategyFirstReport(
-            snapshots = snapshots,
-            signals = signals,
-            executedSignals = hardExits + if (!props.strategyAiVetoEnabled || !props.agentEnabled) aiGated else emptyList(),
-            skippedActions = emptyList(),
-        )
-
         return hardExitExecution
-            .then(aiGatedExecution)
-            .then(ledger.recordPortfolioRun(report))
+            .zipWith(aiGatedExecution)
+            .flatMap { executedTuple ->
+                val executedSignals = executedTuple.t1 + executedTuple.t2
+                val report = buildStrategyFirstReport(
+                    snapshots = snapshots,
+                    signals = signals,
+                    executedSignals = executedSignals,
+                    skippedActions = emptyList(),
+                )
+                ledger.recordPortfolioRun(report)
+            }
             .then(Mono.just(Unit))
     }
 
