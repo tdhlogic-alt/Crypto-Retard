@@ -779,6 +779,8 @@ class BotRunner(
                                 val rsi14 = calculateRsi(closes)
                                 val volatility24hPercent = calculateVolatilityPercent(closes)
                                 val marketRegime = classifyMarketRegime(
+                                    trend1hPercent = trend1hPercent,
+                                    trend4hPercent = trend4hPercent,
                                     trend24hPercent = trend24hPercent,
                                     trend7dPercent = trend7dPercent,
                                     rsi14 = rsi14,
@@ -1285,18 +1287,25 @@ class BotRunner(
     }
 
     private fun classifyMarketRegime(
+        trend1hPercent: BigDecimal,
+        trend4hPercent: BigDecimal,
         trend24hPercent: BigDecimal,
         trend7dPercent: BigDecimal,
         rsi14: BigDecimal,
         volatility24hPercent: BigDecimal,
     ): String {
+        val shortTermAlignedUp = trend1hPercent > BigDecimal.ZERO && trend4hPercent > BigDecimal.ZERO
+        val shortTermAlignedDown = trend1hPercent < BigDecimal.ZERO && trend4hPercent < BigDecimal.ZERO
+
         return when {
             trend24hPercent <= BigDecimal("-7.0") || trend7dPercent <= BigDecimal("-15.0") -> "CRASH"
+            volatility24hPercent >= BigDecimal("7.5") && trend24hPercent < BigDecimal.ZERO -> "HIGH_VOLATILITY"
+            trend7dPercent >= BigDecimal("8.0") && trend24hPercent >= BigDecimal("1.0") && shortTermAlignedUp -> "BULL_TREND"
+            trend7dPercent >= BigDecimal("5.0") && trend24hPercent >= BigDecimal("2.0") && trend4hPercent >= BigDecimal("1.0") -> "MOMENTUM"
+            trend7dPercent <= BigDecimal("-8.0") && trend24hPercent <= BigDecimal("-1.0") && shortTermAlignedDown -> "BEAR_TREND"
+            trend7dPercent < BigDecimal.ZERO && trend24hPercent > BigDecimal("1.0") && trend4hPercent > BigDecimal.ZERO && rsi14 < BigDecimal("65") -> "RECOVERY"
+            trend7dPercent.abs() <= BigDecimal("4.0") && trend24hPercent.abs() <= BigDecimal("3.0") -> "SIDEWAYS"
             volatility24hPercent >= BigDecimal("5.0") -> "HIGH_VOLATILITY"
-            trend7dPercent >= BigDecimal("8.0") && trend24hPercent >= BigDecimal("1.0") -> "BULL_TREND"
-            trend7dPercent <= BigDecimal("-8.0") && trend24hPercent <= BigDecimal("-1.0") -> "BEAR_TREND"
-            trend7dPercent < BigDecimal.ZERO && trend24hPercent > BigDecimal("2.0") && rsi14 < BigDecimal("60") -> "RECOVERY"
-            trend7dPercent.abs() <= BigDecimal("4.0") -> "SIDEWAYS"
             else -> "UNKNOWN"
         }
     }
