@@ -122,6 +122,17 @@ class TradeLedgerClient(
         return readPosition(paperPositions, productId, currentPrice)
     }
 
+    fun getEffectiveCashBalance(realUsdAvailable: BigDecimal, paperMode: Boolean): Mono<BigDecimal> {
+        return if (!paperMode) {
+            Mono.just(realUsdAvailable)
+        } else {
+            Mono.fromCallable {
+                paperAccounts.document("default").get().get()
+                    .getString("cashBalanceUsd")?.toBigDecimalOrNull() ?: realUsdAvailable
+            }
+        }
+    }
+
     private fun readPaperCash(tx: com.google.cloud.firestore.Transaction, fallbackCash: BigDecimal): BigDecimal {
         val accountDoc = tx.get(paperAccounts.document("default")).get()
         return accountDoc.getString("cashBalanceUsd")?.toBigDecimalOrNull() ?: fallbackCash

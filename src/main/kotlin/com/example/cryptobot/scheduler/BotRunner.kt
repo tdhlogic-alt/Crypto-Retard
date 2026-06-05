@@ -725,11 +725,13 @@ class BotRunner(
             .flatMap { accountsResponse ->
                 val accounts = accountsResponse.accounts
 
-                val usdAvailable = accounts
+                val realUsdAvailable = accounts
                     .filter { it.currency == "USD" }
                     .sumOf { it.availableBalance.decimal() }
 
-                Flux.fromIterable(props.productIds)
+                ledger.getEffectiveCashBalance(realUsdAvailable, props.dryRun)
+                    .flatMap { usdAvailable ->
+                        Flux.fromIterable(props.productIds)
                     .flatMap({ productId ->
                         val now = Instant.now()
                         val start = now.minus(7, ChronoUnit.DAYS)
@@ -755,11 +757,9 @@ class BotRunner(
                                 val price = product.price.toBigDecimalOrNull() ?: BigDecimal.ZERO
                                 val baseCurrency = productId.substringBefore("-")
 
-                                val cryptoBalance = accounts
+                                val realCryptoBalance = accounts
                                     .filter { it.currency == baseCurrency }
                                     .sumOf { it.availableBalance.decimal() }
-
-                                val cryptoValueUsd = cryptoBalance.multiply(price)
 
                                 val close1hAgo = closes.getOrNull((closes.size - 2).coerceAtLeast(0)) ?: price
                                 val close4hAgo = closes.getOrNull((closes.size - 5).coerceAtLeast(0)) ?: price
@@ -792,6 +792,9 @@ class BotRunner(
                                     .flatMap { position ->
                                         ledger.getReasonCodeStats(position.activeReasonCode, Instant.now().minus(30, ChronoUnit.DAYS))
                                             .map { reasonStats ->
+                                                val effectiveCryptoBalance = if (props.dryRun) position.quantity else realCryptoBalance
+                                                val effectiveCryptoValueUsd = effectiveCryptoBalance.multiply(price)
+
                                                 productId to MarketSnapshot(
                                             productId = productId,
                                             price = price,
@@ -809,8 +812,8 @@ class BotRunner(
                                                 price.divide(candleLow24h, 4, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
                                             } else BigDecimal.ZERO,
 
-                                            cryptoBalance = cryptoBalance,
-                                            cryptoValueUsd = cryptoValueUsd,
+                                            cryptoBalance = effectiveCryptoBalance,
+                                            cryptoValueUsd = effectiveCryptoValueUsd,
                                             portfolioUsdValue = BigDecimal.ZERO,
                                             portfolioAllocationPercent = BigDecimal.ZERO,
 
@@ -870,6 +873,7 @@ class BotRunner(
                                 portfolioAllocationPercent = allocationPercent,
                             )
                         }
+                    }
                     }
             }
     }
