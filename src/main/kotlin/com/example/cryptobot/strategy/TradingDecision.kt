@@ -39,6 +39,7 @@ data class MarketSnapshot(
     val marketRegime: String = "UNKNOWN",
     val reasonCode30dWinRate: BigDecimal = BigDecimal.ZERO,
     val reasonCode30dCount: Long = 0,
+    val activeReasonCode: String = "NO_CLEAR_EDGE",
     val activeThesis: String = "",
     val activeInvalidationCondition: String = "",
     val activeProfitTargetPercent: BigDecimal = BigDecimal.ZERO,

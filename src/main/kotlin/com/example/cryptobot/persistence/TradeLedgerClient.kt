@@ -99,6 +99,7 @@ class TradeLedgerClient(
                 "topOpenLosers" to report.topOpenLosers.map { it.asMap() },
                 "skipReasonCounts" to report.skipReasonCounts.map { it.asMap() },
                 "baseline24h" to report.baseline24h.map { it.asMap() },
+                "strategyScorecards" to report.strategyScorecards.map { it.asMap() },
             )
 
             firestore.collection("portfolio_runs").add(doc).get()
@@ -224,6 +225,7 @@ class TradeLedgerClient(
         return Mono.fromCallable {
             var realizedPnl = BigDecimal.ZERO
             var sellQuantity = BigDecimal.ZERO
+            var entryReasonCode = "NO_CLEAR_EDGE"
             firestore.runTransaction { tx ->
                 val ref = paperPositions.document(snapshot.productId)
                 val doc = tx.get(ref).get()
@@ -233,6 +235,7 @@ class TradeLedgerClient(
                 val oldRealizedPnl = doc.getString("realizedPnlUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
                 val oldBuyCount = doc.getLong("buyCount") ?: 0L
                 val oldSellCount = doc.getLong("sellCount") ?: 0L
+                entryReasonCode = doc.getString("activeReasonCode") ?: "NO_CLEAR_EDGE"
                 sellQuantity = minOf(baseSize, oldQuantity)
                 val grossProceeds = sellQuantity.multiply(snapshot.price)
                 val estimatedFeeUsd = grossProceeds.multiply(BigDecimal("0.006"))
@@ -277,6 +280,7 @@ class TradeLedgerClient(
                 "grossProceedsUsd" to grossProceeds.toPlainString(),
                 "realizedPnlUsd" to realizedPnl.toPlainString(),
                 "reasonCode" to reasonCode,
+                "entryReasonCode" to entryReasonCode,
                 "outcomeStatus" to reasonCode,
             )).get()
             null
@@ -506,6 +510,7 @@ class TradeLedgerClient(
                 val oldRealizedPnl = doc.getString("realizedPnlUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
                 val oldBuyCount = doc.getLong("buyCount") ?: 0L
                 val oldSellCount = doc.getLong("sellCount") ?: 0L
+                val oldActiveReasonCode = doc.getString("activeReasonCode") ?: "NO_CLEAR_EDGE"
 
                 val sellQuantity = minOf(baseSize, oldQuantity)
                 val proceeds = sellQuantity.multiply(snapshot.price)
@@ -526,6 +531,7 @@ class TradeLedgerClient(
                         "totalInvested" to newTotalInvested.toPlainString(),
                         "realizedPnlUsd" to oldRealizedPnl.add(realizedPnl).toPlainString(),
                         "lastSellReasonCode" to reasonCode,
+                        "lastEntryReasonCode" to oldActiveReasonCode,
                         "buyCount" to oldBuyCount,
                         "sellCount" to oldSellCount + 1,
                         "lastSellAt" to Timestamp.now(),
@@ -620,6 +626,79 @@ class TradeLedgerClient(
                     .divide(BigDecimal(outcomes.size), 6, RoundingMode.HALF_UP)
                     .multiply(BigDecimal("100")),
             )
+        }.subscribeOn(Schedulers.boundedElastic())
+    }
+
+
+    fun getStrategyScorecards(since: Instant, snapshots: List<MarketSnapshot>, dryRun: Boolean): Mono<List<StrategyScorecard>> {
+        return Mono.fromCallable {
+            val cards = linkedMapOf<String, StrategyScorecardAccumulator>()
+
+            fun card(reasonCode: String): StrategyScorecardAccumulator {
+                val normalized = reasonCode.ifBlank { "NO_CLEAR_EDGE" }
+                return cards.getOrPut(normalized) { StrategyScorecardAccumulator(normalized) }
+            }
+
+            val decisionSnapshot = decisions
+                .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
+                .orderBy("createdAt", Query.Direction.ASCENDING)
+                .get()
+                .get()
+
+            decisionSnapshot.documents
+                .filter { it.getBoolean("dryRun") == dryRun }
+                .forEach { doc ->
+                    val reasonCode = doc.getString("reasonCode") ?: "NO_CLEAR_EDGE"
+                    val decisionType = doc.getString("decisionType") ?: return@forEach
+                    val acc = card(reasonCode)
+                    when (decisionType) {
+                        "BUY", "ROTATE_BUY" -> {
+                            acc.buyCount += 1
+                            acc.buyNotionalUsd += doc.getString("quoteSizeUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                        }
+                        "SELL", "ROTATE_SELL" -> acc.exitCount += 1
+                    }
+
+                    doc.getString("outcomePnlPercent")?.toBigDecimalOrNull()?.let { outcome ->
+                        acc.scoredOutcomeCount += 1
+                        if (outcome > BigDecimal.ZERO) acc.scoredWinCount += 1
+                        acc.totalOutcomePercent += outcome
+                    }
+                }
+
+            if (dryRun) {
+                val fillSnapshot = paperFills
+                    .whereGreaterThanOrEqualTo("createdAt", Timestamp.ofTimeSecondsAndNanos(since.epochSecond, since.nano))
+                    .orderBy("createdAt", Query.Direction.ASCENDING)
+                    .get()
+                    .get()
+
+                fillSnapshot.documents
+                    .filter { it.getString("side") == "SELL" }
+                    .forEach { doc ->
+                        val entryReasonCode = doc.getString("entryReasonCode") ?: return@forEach
+                        val realizedPnlUsd = doc.getString("realizedPnlUsd")?.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                        val acc = card(entryReasonCode)
+                        acc.closedPositionCount += 1
+                        if (realizedPnlUsd > BigDecimal.ZERO) acc.closedWinCount += 1
+                        acc.realizedPnlUsd += realizedPnlUsd
+                    }
+            }
+
+            snapshots
+                .filter { it.cryptoValueUsd > BigDecimal.ZERO }
+                .forEach { snapshot ->
+                    val acc = card(snapshot.activeReasonCode)
+                    acc.openPositionCount += 1
+                    acc.openMarketValueUsd += snapshot.cryptoValueUsd
+                    acc.unrealizedPnlUsd += snapshot.unrealizedPnlUsd
+                    acc.weightedUnrealizedPnlPercent += snapshot.unrealizedPnlPercent.multiply(snapshot.cryptoValueUsd)
+                }
+
+            cards.values
+                .filter { it.reasonCode != "NO_CLEAR_EDGE" }
+                .map { it.toScorecard() }
+                .sortedWith(compareByDescending<StrategyScorecard> { it.openMarketValueUsd }.thenByDescending { it.buyCount })
         }.subscribeOn(Schedulers.boundedElastic())
     }
 
@@ -747,6 +826,72 @@ data class ReasonCodeStats(
             count = 0,
             wins = 0,
             winRatePercent = BigDecimal.ZERO,
+        )
+    }
+}
+
+data class StrategyScorecard(
+    val reasonCode: String,
+    val buyCount: Long,
+    val buyNotionalUsd: BigDecimal,
+    val exitCount: Long,
+    val scoredOutcomeCount: Long,
+    val scoredWinRatePercent: BigDecimal,
+    val averageOutcomePercent: BigDecimal,
+    val closedPositionCount: Long,
+    val closedWinRatePercent: BigDecimal,
+    val realizedPnlUsd: BigDecimal,
+    val openPositionCount: Long,
+    val openMarketValueUsd: BigDecimal,
+    val unrealizedPnlUsd: BigDecimal,
+    val weightedUnrealizedPnlPercent: BigDecimal,
+)
+
+private data class StrategyScorecardAccumulator(
+    val reasonCode: String,
+    var buyCount: Long = 0,
+    var buyNotionalUsd: BigDecimal = BigDecimal.ZERO,
+    var exitCount: Long = 0,
+    var scoredOutcomeCount: Long = 0,
+    var scoredWinCount: Long = 0,
+    var totalOutcomePercent: BigDecimal = BigDecimal.ZERO,
+    var closedPositionCount: Long = 0,
+    var closedWinCount: Long = 0,
+    var realizedPnlUsd: BigDecimal = BigDecimal.ZERO,
+    var openPositionCount: Long = 0,
+    var openMarketValueUsd: BigDecimal = BigDecimal.ZERO,
+    var unrealizedPnlUsd: BigDecimal = BigDecimal.ZERO,
+    var weightedUnrealizedPnlPercent: BigDecimal = BigDecimal.ZERO,
+) {
+    fun toScorecard(): StrategyScorecard {
+        val scoredWinRate = if (scoredOutcomeCount > 0) {
+            BigDecimal(scoredWinCount).divide(BigDecimal(scoredOutcomeCount), 6, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+        } else BigDecimal.ZERO
+        val avgOutcome = if (scoredOutcomeCount > 0) {
+            totalOutcomePercent.divide(BigDecimal(scoredOutcomeCount), 6, RoundingMode.HALF_UP)
+        } else BigDecimal.ZERO
+        val closedWinRate = if (closedPositionCount > 0) {
+            BigDecimal(closedWinCount).divide(BigDecimal(closedPositionCount), 6, RoundingMode.HALF_UP).multiply(BigDecimal("100"))
+        } else BigDecimal.ZERO
+        val openWeightedPnl = if (openMarketValueUsd > BigDecimal.ZERO) {
+            weightedUnrealizedPnlPercent.divide(openMarketValueUsd, 6, RoundingMode.HALF_UP)
+        } else BigDecimal.ZERO
+
+        return StrategyScorecard(
+            reasonCode = reasonCode,
+            buyCount = buyCount,
+            buyNotionalUsd = buyNotionalUsd,
+            exitCount = exitCount,
+            scoredOutcomeCount = scoredOutcomeCount,
+            scoredWinRatePercent = scoredWinRate,
+            averageOutcomePercent = avgOutcome,
+            closedPositionCount = closedPositionCount,
+            closedWinRatePercent = closedWinRate,
+            realizedPnlUsd = realizedPnlUsd,
+            openPositionCount = openPositionCount,
+            openMarketValueUsd = openMarketValueUsd,
+            unrealizedPnlUsd = unrealizedPnlUsd,
+            weightedUnrealizedPnlPercent = openWeightedPnl,
         )
     }
 }
