@@ -7,6 +7,7 @@ import com.example.cryptobot.alerts.DiscordAlertClient
 import com.example.cryptobot.coinbase.CoinbaseClient
 import com.example.cryptobot.config.BotProperties
 import com.example.cryptobot.config.CoinbaseProperties
+import com.example.cryptobot.persistence.StrategyScorecard
 import com.example.cryptobot.persistence.TradeLedgerClient
 import com.example.cryptobot.strategy.MarketSnapshot
 import com.example.cryptobot.strategy.DeterministicStrategyEngine
@@ -477,6 +478,7 @@ class BotRunner(
             topOpenLosers = buildTopOpenLosers(snapshots),
             skipReasonCounts = buildSkipReasonCounts(actions),
             baseline24h = buildBaseline24h(snapshots),
+            strategyScorecards = buildStrategyScorecards(snapshots),
         )
     }
 
@@ -509,6 +511,7 @@ class BotRunner(
             topOpenLosers = buildTopOpenLosers(snapshots),
             skipReasonCounts = buildSkipReasonCounts(proposed),
             baseline24h = buildBaseline24h(snapshots),
+            strategyScorecards = buildStrategyScorecards(snapshots),
         )
     }
 
@@ -654,6 +657,21 @@ class BotRunner(
         return baselines
     }
 
+
+    private fun buildStrategyScorecards(snapshots: List<MarketSnapshot>): List<StrategyScorecardReport> {
+        val since = Instant.now().minus(30, ChronoUnit.DAYS)
+        return try {
+            ledger.getStrategyScorecards(since, snapshots, props.dryRun)
+                .blockOptional()
+                .orElse(emptyList())
+                .take(8)
+                .map { StrategyScorecardReport.from(it) }
+        } catch (ex: Exception) {
+            log.warn("Unable to build strategy scorecards: {}", ex.message)
+            emptyList()
+        }
+    }
+
     private fun formatPortfolioExecutionReport(report: PortfolioRunReport): String {
         val executed = report.actions.filter { it.status == "EXECUTED" }
         val skipped = report.actions.filter { it.status != "EXECUTED" }
@@ -705,6 +723,9 @@ class BotRunner(
 
             Top skip/rejection reasons:
             $skipReasonLines
+
+            Strategy scorecards (30d, current mode):
+            $scorecardLines
 
             EXECUTED / ATTEMPTED:
             $executedLines
@@ -839,6 +860,7 @@ class BotRunner(
                                             marketRegime = marketRegime,
                                             reasonCode30dWinRate = reasonStats.winRatePercent,
                                             reasonCode30dCount = reasonStats.count,
+                                            activeReasonCode = position.activeReasonCode,
                                             activeThesis = position.activeThesis,
                                             activeInvalidationCondition = position.activeInvalidationCondition,
                                             activeProfitTargetPercent = position.activeProfitTargetPercent,
@@ -1383,6 +1405,7 @@ data class PortfolioRunReport(
     val topOpenLosers: List<PortfolioLoserReport>,
     val skipReasonCounts: List<SkipReasonCount>,
     val baseline24h: List<Baseline24hReport>,
+    val strategyScorecards: List<StrategyScorecardReport> = emptyList(),
 )
 
 data class PlanActionReport(
@@ -1562,4 +1585,58 @@ data class Baseline24hReport(
         "name" to name,
         "change24hPercent" to change24hPercent.toPlainString(),
     )
+}
+
+
+data class StrategyScorecardReport(
+    val reasonCode: String,
+    val buyCount: Long,
+    val buyNotionalUsd: BigDecimal,
+    val exitCount: Long,
+    val scoredOutcomeCount: Long,
+    val scoredWinRatePercent: BigDecimal,
+    val averageOutcomePercent: BigDecimal,
+    val closedPositionCount: Long,
+    val closedWinRatePercent: BigDecimal,
+    val realizedPnlUsd: BigDecimal,
+    val openPositionCount: Long,
+    val openMarketValueUsd: BigDecimal,
+    val unrealizedPnlUsd: BigDecimal,
+    val weightedUnrealizedPnlPercent: BigDecimal,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "reasonCode" to reasonCode,
+        "buyCount" to buyCount,
+        "buyNotionalUsd" to buyNotionalUsd.toPlainString(),
+        "exitCount" to exitCount,
+        "scoredOutcomeCount" to scoredOutcomeCount,
+        "scoredWinRatePercent" to scoredWinRatePercent.toPlainString(),
+        "averageOutcomePercent" to averageOutcomePercent.toPlainString(),
+        "closedPositionCount" to closedPositionCount,
+        "closedWinRatePercent" to closedWinRatePercent.toPlainString(),
+        "realizedPnlUsd" to realizedPnlUsd.toPlainString(),
+        "openPositionCount" to openPositionCount,
+        "openMarketValueUsd" to openMarketValueUsd.toPlainString(),
+        "unrealizedPnlUsd" to unrealizedPnlUsd.toPlainString(),
+        "weightedUnrealizedPnlPercent" to weightedUnrealizedPnlPercent.toPlainString(),
+    )
+
+    companion object {
+        fun from(scorecard: StrategyScorecard) = StrategyScorecardReport(
+            reasonCode = scorecard.reasonCode,
+            buyCount = scorecard.buyCount,
+            buyNotionalUsd = scorecard.buyNotionalUsd,
+            exitCount = scorecard.exitCount,
+            scoredOutcomeCount = scorecard.scoredOutcomeCount,
+            scoredWinRatePercent = scorecard.scoredWinRatePercent,
+            averageOutcomePercent = scorecard.averageOutcomePercent,
+            closedPositionCount = scorecard.closedPositionCount,
+            closedWinRatePercent = scorecard.closedWinRatePercent,
+            realizedPnlUsd = scorecard.realizedPnlUsd,
+            openPositionCount = scorecard.openPositionCount,
+            openMarketValueUsd = scorecard.openMarketValueUsd,
+            unrealizedPnlUsd = scorecard.unrealizedPnlUsd,
+            weightedUnrealizedPnlPercent = scorecard.weightedUnrealizedPnlPercent,
+        )
+    }
 }
