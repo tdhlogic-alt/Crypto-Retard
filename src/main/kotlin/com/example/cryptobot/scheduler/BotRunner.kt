@@ -702,6 +702,16 @@ class BotRunner(
         val skipReasonLines = report.skipReasonCounts
             .joinToString("\n") { "- ${it.count}x ${it.reason}" }
             .ifBlank { "None" }
+        val scorecardLines = report.strategyScorecards
+            .take(8)
+            .joinToString("\n") { card ->
+                "- ${card.reasonCode}: buys=${card.buyCount} notional=${'$'}${card.buyNotionalUsd.setScale(2, RoundingMode.HALF_UP)} " +
+                    "open=${card.openPositionCount}/${'$'}${card.openMarketValueUsd.setScale(2, RoundingMode.HALF_UP)} " +
+                    "uPnL=${'$'}${card.unrealizedPnlUsd.setScale(2, RoundingMode.HALF_UP)} (${card.weightedUnrealizedPnlPercent.setScale(2, RoundingMode.HALF_UP)}%) " +
+                    "closed=${card.closedPositionCount} realized=${'$'}${card.realizedPnlUsd.setScale(2, RoundingMode.HALF_UP)} " +
+                    "outcomes=${card.scoredOutcomeCount} avg=${card.averageOutcomePercent.setScale(2, RoundingMode.HALF_UP)}% win=${card.scoredWinRatePercent.setScale(1, RoundingMode.HALF_UP)}%"
+            }
+            .ifBlank { "No strategy activity yet" }
 
         val mode = if (report.dryRun) "DRY_RUN" else if (report.liveTradingEnabled) "LIVE" else "LIVE_BLOCKED"
 
