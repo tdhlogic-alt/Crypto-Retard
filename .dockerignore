@@ -1,10 +1,14 @@
-# Ignore Gradle and build artifacts
+# Ignore Gradle caches and generic build artifacts
 .gradle/
-build/
-**/build/
+.gradle
 **/target/
 *.jar
-.gradle
+
+# Keep the prebuilt Spring Boot jar in the Docker build context.
+# The GitHub Action creates this file before docker build.
+!build/
+!build/libs/
+!build/libs/app.jar
 
 # IDE files
 .idea/
