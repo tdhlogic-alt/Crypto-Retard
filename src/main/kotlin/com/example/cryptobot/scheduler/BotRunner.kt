@@ -479,6 +479,13 @@ class BotRunner(
             skipReasonCounts = buildSkipReasonCounts(actions),
             baseline24h = buildBaseline24h(snapshots),
             strategyScorecards = buildStrategyScorecards(snapshots),
+            decisionFunnel = buildStrategyDecisionFunnel(
+                snapshots = snapshots,
+                signals = signals,
+                executedSignals = executedSignals,
+                skippedActions = skippedActions,
+            ),
+            positionLifecycles = buildPositionLifecycleReports(snapshots),
         )
     }
 
@@ -512,6 +519,8 @@ class BotRunner(
             skipReasonCounts = buildSkipReasonCounts(proposed),
             baseline24h = buildBaseline24h(snapshots),
             strategyScorecards = buildStrategyScorecards(snapshots),
+            decisionFunnel = buildAgentDecisionFunnel(snapshots, proposed),
+            positionLifecycles = buildPositionLifecycleReports(snapshots),
         )
     }
 
@@ -573,6 +582,72 @@ class BotRunner(
                 )
             }
             .sortedByDescending { it.cryptoValueUsd }
+    }
+
+    private fun buildStrategyDecisionFunnel(
+        snapshots: List<MarketSnapshot>,
+        signals: List<StrategySignal>,
+        executedSignals: List<StrategySignal>,
+        skippedActions: List<PlanActionReport>,
+    ): DecisionFunnelReport {
+        val hardExitSignals = signals.count { it.hardExit || !it.requiresAiApproval }
+        val aiGatedSignals = signals.count { it.requiresAiApproval && !it.hardExit }
+        val aiApprovedSignals = executedSignals.count { it.requiresAiApproval && !it.hardExit }
+        val executedActions = executedSignals.size
+        return DecisionFunnelReport(
+            candidatesScanned = snapshots.size,
+            strategySignalCount = signals.size,
+            hardExitSignalCount = hardExitSignals,
+            aiGatedSignalCount = aiGatedSignals,
+            aiApprovedSignalCount = aiApprovedSignals,
+            aiVetoedSignalCount = (aiGatedSignals - aiApprovedSignals).coerceAtLeast(0),
+            riskRejectedActionCount = skippedActions.size,
+            executedActionCount = executedActions,
+            paperTradeCount = if (props.dryRun) executedActions else 0,
+        )
+    }
+
+    private fun buildAgentDecisionFunnel(
+        snapshots: List<MarketSnapshot>,
+        actions: List<PlanActionReport>,
+    ): DecisionFunnelReport {
+        return DecisionFunnelReport(
+            candidatesScanned = snapshots.size,
+            strategySignalCount = actions.size,
+            hardExitSignalCount = 0,
+            aiGatedSignalCount = actions.size,
+            aiApprovedSignalCount = actions.count { it.status == "EXECUTED" },
+            aiVetoedSignalCount = actions.count { it.status != "EXECUTED" && it.detail.contains("veto", ignoreCase = true) },
+            riskRejectedActionCount = actions.count { it.status != "EXECUTED" },
+            executedActionCount = actions.count { it.status == "EXECUTED" },
+            paperTradeCount = if (props.dryRun) actions.count { it.status == "EXECUTED" } else 0,
+        )
+    }
+
+    private fun buildPositionLifecycleReports(snapshots: List<MarketSnapshot>): List<PositionLifecycleReport> {
+        return snapshots
+            .filter { it.cryptoValueUsd > BigDecimal.ZERO }
+            .sortedByDescending { it.cryptoValueUsd }
+            .take(10)
+            .map { snapshot ->
+                PositionLifecycleReport(
+                    productId = snapshot.productId,
+                    entryReasonCode = snapshot.activeReasonCode,
+                    thesis = snapshot.activeThesis,
+                    invalidationCondition = snapshot.activeInvalidationCondition,
+                    marketValueUsd = snapshot.cryptoValueUsd,
+                    avgCostBasis = snapshot.avgCostBasis,
+                    unrealizedPnlUsd = snapshot.unrealizedPnlUsd,
+                    unrealizedPnlPercent = snapshot.unrealizedPnlPercent,
+                    drawdownFromHighPercent = snapshot.drawdownFromHighPercent,
+                    marketRegime = snapshot.marketRegime,
+                    buyCount = snapshot.buyCount,
+                    sellCount = snapshot.sellCount,
+                    profitTargetPercent = snapshot.activeProfitTargetPercent,
+                    stopLossPercent = snapshot.activeStopLossPercent,
+                    maxHoldHours = snapshot.activeMaxHoldHours,
+                )
+            }
     }
 
     private fun buildPortfolioRunSummary(
@@ -702,6 +777,26 @@ class BotRunner(
         val skipReasonLines = report.skipReasonCounts
             .joinToString("\n") { "- ${it.count}x ${it.reason}" }
             .ifBlank { "None" }
+        val funnel = report.decisionFunnel
+        val funnelLines = listOf(
+            "Candidates scanned: ${funnel.candidatesScanned}",
+            "Strategy/agent signals: ${funnel.strategySignalCount}",
+            "Hard exits: ${funnel.hardExitSignalCount}",
+            "AI gated: ${funnel.aiGatedSignalCount}",
+            "AI approved: ${funnel.aiApprovedSignalCount}",
+            "AI vetoed/blocked: ${funnel.aiVetoedSignalCount}",
+            "Risk rejected: ${funnel.riskRejectedActionCount}",
+            "Executed/paper trades: ${funnel.executedActionCount}/${funnel.paperTradeCount}",
+        ).joinToString("\n") { "- $it" }
+        val lifecycleLines = report.positionLifecycles
+            .take(8)
+            .joinToString("\n") { position ->
+                "- ${position.productId}: entry=${position.entryReasonCode} value=${'$'}${position.marketValueUsd.setScale(2, RoundingMode.HALF_UP)} " +
+                    "uPnL=${'$'}${position.unrealizedPnlUsd.setScale(2, RoundingMode.HALF_UP)} (${position.unrealizedPnlPercent.setScale(2, RoundingMode.HALF_UP)}%) " +
+                    "drawdown=${position.drawdownFromHighPercent.setScale(2, RoundingMode.HALF_UP)}% regime=${position.marketRegime} " +
+                    "buys=${position.buyCount} sells=${position.sellCount}"
+            }
+            .ifBlank { "No open positions" }
         val scorecardLines = report.strategyScorecards
             .take(8)
             .joinToString("\n") { card ->
@@ -731,8 +826,14 @@ class BotRunner(
             Top open losers:
             $loserLines
 
+            Decision funnel:
+            $funnelLines
+
             Top skip/rejection reasons:
             $skipReasonLines
+
+            Position lifecycle snapshots:
+            $lifecycleLines
 
             Strategy scorecards (30d, current mode):
             $scorecardLines
@@ -1416,6 +1517,8 @@ data class PortfolioRunReport(
     val skipReasonCounts: List<SkipReasonCount>,
     val baseline24h: List<Baseline24hReport>,
     val strategyScorecards: List<StrategyScorecardReport> = emptyList(),
+    val decisionFunnel: DecisionFunnelReport = DecisionFunnelReport.empty(),
+    val positionLifecycles: List<PositionLifecycleReport> = emptyList(),
 )
 
 data class PlanActionReport(
@@ -1427,6 +1530,8 @@ data class PlanActionReport(
     val confidence: BigDecimal,
     val quoteSizeUsd: BigDecimal,
     val baseSize: BigDecimal,
+    val reasonCode: String,
+    val strategyName: String,
     val fundingProductId: String,
     val fundingBaseSize: BigDecimal,
 ) {
@@ -1439,6 +1544,8 @@ data class PlanActionReport(
         "confidence" to confidence.toPlainString(),
         "quoteSizeUsd" to quoteSizeUsd.toPlainString(),
         "baseSize" to baseSize.toPlainString(),
+        "reasonCode" to reasonCode,
+        "strategyName" to strategyName,
         "fundingProductId" to fundingProductId,
         "fundingBaseSize" to fundingBaseSize.toPlainString(),
     )
@@ -1455,6 +1562,8 @@ data class PlanActionReport(
                     confidence = BigDecimal.ZERO,
                     quoteSizeUsd = decision.quoteSizeUsd,
                     baseSize = BigDecimal.ZERO,
+                    reasonCode = decision.reasonCode,
+                    strategyName = signal.strategyName,
                     fundingProductId = "",
                     fundingBaseSize = BigDecimal.ZERO,
                 )
@@ -1467,6 +1576,8 @@ data class PlanActionReport(
                     confidence = BigDecimal.ZERO,
                     quoteSizeUsd = BigDecimal.ZERO,
                     baseSize = decision.baseSize,
+                    reasonCode = decision.reasonCode,
+                    strategyName = signal.strategyName,
                     fundingProductId = "",
                     fundingBaseSize = BigDecimal.ZERO,
                 )
@@ -1479,6 +1590,8 @@ data class PlanActionReport(
                     confidence = BigDecimal.ZERO,
                     quoteSizeUsd = decision.buy.quoteSizeUsd,
                     baseSize = decision.sell.baseSize,
+                    reasonCode = decision.buy.reasonCode,
+                    strategyName = signal.strategyName,
                     fundingProductId = decision.sell.productId,
                     fundingBaseSize = decision.sell.baseSize,
                 )
@@ -1495,6 +1608,8 @@ data class PlanActionReport(
             confidence = BigDecimal.ZERO,
             quoteSizeUsd = BigDecimal.ZERO,
             baseSize = BigDecimal.ZERO,
+            reasonCode = "NO_CLEAR_EDGE",
+            strategyName = "skip",
             fundingProductId = "",
             fundingBaseSize = BigDecimal.ZERO,
         )
@@ -1510,6 +1625,13 @@ data class PlanActionReport(
                 confidence = agentDecision.confidence,
                 quoteSizeUsd = agentDecision.quoteSizeUsd,
                 baseSize = agentDecision.baseSize,
+                reasonCode = when (val decision = action.decision) {
+                    is TradingDecision.Buy -> decision.reasonCode
+                    is TradingDecision.Sell -> decision.reasonCode
+                    is TradingDecision.Rotate -> decision.buy.reasonCode
+                    is TradingDecision.Skip -> "NO_CLEAR_EDGE"
+                },
+                strategyName = "agent-plan",
                 fundingProductId = agentDecision.fundingProductId,
                 fundingBaseSize = agentDecision.fundingBaseSize,
             )
@@ -1597,6 +1719,80 @@ data class Baseline24hReport(
     )
 }
 
+
+data class DecisionFunnelReport(
+    val candidatesScanned: Int,
+    val strategySignalCount: Int,
+    val hardExitSignalCount: Int,
+    val aiGatedSignalCount: Int,
+    val aiApprovedSignalCount: Int,
+    val aiVetoedSignalCount: Int,
+    val riskRejectedActionCount: Int,
+    val executedActionCount: Int,
+    val paperTradeCount: Int,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "candidatesScanned" to candidatesScanned,
+        "strategySignalCount" to strategySignalCount,
+        "hardExitSignalCount" to hardExitSignalCount,
+        "aiGatedSignalCount" to aiGatedSignalCount,
+        "aiApprovedSignalCount" to aiApprovedSignalCount,
+        "aiVetoedSignalCount" to aiVetoedSignalCount,
+        "riskRejectedActionCount" to riskRejectedActionCount,
+        "executedActionCount" to executedActionCount,
+        "paperTradeCount" to paperTradeCount,
+    )
+
+    companion object {
+        fun empty(): DecisionFunnelReport = DecisionFunnelReport(
+            candidatesScanned = 0,
+            strategySignalCount = 0,
+            hardExitSignalCount = 0,
+            aiGatedSignalCount = 0,
+            aiApprovedSignalCount = 0,
+            aiVetoedSignalCount = 0,
+            riskRejectedActionCount = 0,
+            executedActionCount = 0,
+            paperTradeCount = 0,
+        )
+    }
+}
+
+data class PositionLifecycleReport(
+    val productId: String,
+    val entryReasonCode: String,
+    val thesis: String,
+    val invalidationCondition: String,
+    val marketValueUsd: BigDecimal,
+    val avgCostBasis: BigDecimal,
+    val unrealizedPnlUsd: BigDecimal,
+    val unrealizedPnlPercent: BigDecimal,
+    val drawdownFromHighPercent: BigDecimal,
+    val marketRegime: String,
+    val buyCount: Long,
+    val sellCount: Long,
+    val profitTargetPercent: BigDecimal,
+    val stopLossPercent: BigDecimal,
+    val maxHoldHours: Long,
+) {
+    fun asMap(): Map<String, Any?> = mapOf(
+        "productId" to productId,
+        "entryReasonCode" to entryReasonCode,
+        "thesis" to thesis,
+        "invalidationCondition" to invalidationCondition,
+        "marketValueUsd" to marketValueUsd.toPlainString(),
+        "avgCostBasis" to avgCostBasis.toPlainString(),
+        "unrealizedPnlUsd" to unrealizedPnlUsd.toPlainString(),
+        "unrealizedPnlPercent" to unrealizedPnlPercent.toPlainString(),
+        "drawdownFromHighPercent" to drawdownFromHighPercent.toPlainString(),
+        "marketRegime" to marketRegime,
+        "buyCount" to buyCount,
+        "sellCount" to sellCount,
+        "profitTargetPercent" to profitTargetPercent.toPlainString(),
+        "stopLossPercent" to stopLossPercent.toPlainString(),
+        "maxHoldHours" to maxHoldHours,
+    )
+}
 
 data class StrategyScorecardReport(
     val reasonCode: String,

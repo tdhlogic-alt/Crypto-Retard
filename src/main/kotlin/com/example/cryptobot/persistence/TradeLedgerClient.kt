@@ -26,6 +26,7 @@ class TradeLedgerClient(
     private val missedTrades = firestore.collection("missed_trades")
     private val paperAccounts = firestore.collection("paper_accounts")
     private val dailyPaperSummaries = firestore.collection("daily_paper_summaries")
+    private val dailyObservabilityReports = firestore.collection("daily_observability_reports")
 
     fun record(
         snapshot: MarketSnapshot,
@@ -100,9 +101,12 @@ class TradeLedgerClient(
                 "skipReasonCounts" to report.skipReasonCounts.map { it.asMap() },
                 "baseline24h" to report.baseline24h.map { it.asMap() },
                 "strategyScorecards" to report.strategyScorecards.map { it.asMap() },
+                "decisionFunnel" to report.decisionFunnel.asMap(),
+                "positionLifecycles" to report.positionLifecycles.map { it.asMap() },
             )
 
             firestore.collection("portfolio_runs").add(doc).get()
+            recordDailyObservabilityReport(report)
             log.info(
                 "Recorded portfolio run: proposed={} executed={} skipped={}",
                 report.proposedActionCount,
@@ -113,6 +117,52 @@ class TradeLedgerClient(
         }
             .subscribeOn(Schedulers.boundedElastic())
             .then()
+    }
+
+    private fun recordDailyObservabilityReport(report: PortfolioRunReport) {
+        val today = report.createdAt.toString().substring(0, 10)
+        val largestPosition = report.portfolioBefore.maxByOrNull { it.cryptoValueUsd }
+        val largestDrawdown = report.topOpenLosers.maxByOrNull { it.drawdownFromHighPercent }
+        val bestStrategy = report.strategyScorecards.maxByOrNull { it.realizedPnlUsd + it.unrealizedPnlUsd }
+        val worstStrategy = report.strategyScorecards.minByOrNull { it.realizedPnlUsd + it.unrealizedPnlUsd }
+        val dailyRef = dailyObservabilityReports.document(today)
+        val existingDaily = dailyRef.get().get()
+        val startingEquityUsd = existingDaily.getString("startingEquityUsd") ?: report.summary.totalValueUsd.toPlainString()
+
+        dailyRef.set(
+            mapOf(
+                "date" to today,
+                "updatedAt" to Timestamp.now(),
+                "startingEquityUsd" to startingEquityUsd,
+                "endingEquityUsd" to report.summary.totalValueUsd.toPlainString(),
+                "dryRun" to report.dryRun,
+                "liveTradingEnabled" to report.liveTradingEnabled,
+                "currentEquityUsd" to report.summary.totalValueUsd.toPlainString(),
+                "cashUsd" to report.summary.cashUsd.toPlainString(),
+                "cryptoValueUsd" to report.summary.cryptoValueUsd.toPlainString(),
+                "realizedPnlUsd" to report.summary.realizedPnlUsd.toPlainString(),
+                "unrealizedPnlUsd" to report.summary.unrealizedPnlUsd.toPlainString(),
+                "proposedActionCount" to report.proposedActionCount,
+                "executedActionCount" to report.executedActionCount,
+                "skippedActionCount" to report.skippedActionCount,
+                "aiVetoCount" to report.decisionFunnel.aiVetoedSignalCount,
+                "riskRejectedActionCount" to report.decisionFunnel.riskRejectedActionCount,
+                "paperTradeCount" to report.decisionFunnel.paperTradeCount,
+                "largestPositionProductId" to largestPosition?.productId,
+                "largestPositionValueUsd" to largestPosition?.cryptoValueUsd?.toPlainString(),
+                "largestPositionAllocationPercent" to largestPosition?.allocationPercent?.toPlainString(),
+                "largestDrawdownProductId" to largestDrawdown?.productId,
+                "largestDrawdownPercent" to largestDrawdown?.drawdownFromHighPercent?.toPlainString(),
+                "bestStrategyReasonCode" to bestStrategy?.reasonCode,
+                "bestStrategyTotalPnlUsd" to bestStrategy?.let { (it.realizedPnlUsd + it.unrealizedPnlUsd).toPlainString() },
+                "worstStrategyReasonCode" to worstStrategy?.reasonCode,
+                "worstStrategyTotalPnlUsd" to worstStrategy?.let { (it.realizedPnlUsd + it.unrealizedPnlUsd).toPlainString() },
+                "decisionFunnel" to report.decisionFunnel.asMap(),
+                "strategyScorecards" to report.strategyScorecards.map { it.asMap() },
+                "positionLifecycles" to report.positionLifecycles.map { it.asMap() },
+            ),
+            com.google.cloud.firestore.SetOptions.merge(),
+        ).get()
     }
 
     fun getEffectivePosition(productId: String, currentPrice: BigDecimal, paperMode: Boolean): Mono<PositionSnapshot> {
@@ -336,9 +386,34 @@ class TradeLedgerClient(
                         "marketValueUsd" to value.toPlainString(),
                         "unrealizedPnlUsd" to positionUnrealized.toPlainString(),
                         "unrealizedPnlPercent" to if (cost > BigDecimal.ZERO) positionUnrealized.divide(cost, 6, RoundingMode.HALF_UP).multiply(BigDecimal("100")).toPlainString() else BigDecimal.ZERO.toPlainString(),
+                        "avgCostBasis" to avgCostBasis.toPlainString(),
+                        "activeReasonCode" to (doc.getString("activeReasonCode") ?: "NO_CLEAR_EDGE"),
+                        "activeThesis" to (doc.getString("activeThesis") ?: ""),
+                        "activeInvalidationCondition" to (doc.getString("activeInvalidationCondition") ?: ""),
+                        "marketRegime" to (byProduct[productId]?.marketRegime ?: "UNKNOWN"),
+                        "drawdownFromHighPercent" to (byProduct[productId]?.drawdownFromHighPercent ?: BigDecimal.ZERO).toPlainString(),
+                        "buyCount" to (doc.getLong("buyCount") ?: 0L),
+                        "sellCount" to (doc.getLong("sellCount") ?: 0L),
+                        "lastBuyAt" to doc.getTimestamp("lastBuyAt"),
+                        "lastSellAt" to doc.getTimestamp("lastSellAt"),
                     )
                 }
             }
+            val strategyOpenExposure = openPositions
+                .groupBy { it["activeReasonCode"] as? String ?: "NO_CLEAR_EDGE" }
+                .map { (reasonCode, positions) ->
+                    val value = positions.sumOf { (it["marketValueUsd"] as? String)?.toBigDecimalOrNull() ?: BigDecimal.ZERO }
+                    val pnl = positions.sumOf { (it["unrealizedPnlUsd"] as? String)?.toBigDecimalOrNull() ?: BigDecimal.ZERO }
+                    mapOf(
+                        "reasonCode" to reasonCode,
+                        "openPositionCount" to positions.size,
+                        "marketValueUsd" to value.toPlainString(),
+                        "unrealizedPnlUsd" to pnl.toPlainString(),
+                    )
+                }
+                .sortedByDescending { (it["marketValueUsd"] as String).toBigDecimal() }
+            val largestPosition = openPositions.maxByOrNull { (it["marketValueUsd"] as? String)?.toBigDecimalOrNull() ?: BigDecimal.ZERO }
+            val largestDrawdown = openPositions.maxByOrNull { (it["drawdownFromHighPercent"] as? String)?.toBigDecimalOrNull() ?: BigDecimal.ZERO }
             val totalPnl = realizedPnl + unrealizedPnl
             val today = Instant.now().toString().substring(0, 10)
             dailyPaperSummaries.document(today).set(mapOf(
@@ -353,6 +428,11 @@ class TradeLedgerClient(
                 "costBasisUsd" to invested.toPlainString(),
                 "openPositionCount" to openPositions.size,
                 "openPositions" to openPositions,
+                "strategyOpenExposure" to strategyOpenExposure,
+                "largestPositionProductId" to largestPosition?.get("productId"),
+                "largestPositionValueUsd" to largestPosition?.get("marketValueUsd"),
+                "largestDrawdownProductId" to largestDrawdown?.get("productId"),
+                "largestDrawdownPercent" to largestDrawdown?.get("drawdownFromHighPercent"),
                 "btc24hPercent" to (byProduct["BTC-USD"]?.trend24hPercent ?: BigDecimal.ZERO).toPlainString(),
                 "eth24hPercent" to (byProduct["ETH-USD"]?.trend24hPercent ?: BigDecimal.ZERO).toPlainString(),
             ), com.google.cloud.firestore.SetOptions.merge()).get()
